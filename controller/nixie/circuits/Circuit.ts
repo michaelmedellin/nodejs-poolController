@@ -33,6 +33,17 @@ export class NixieCircuitCollection extends NixieEquipmentCollection<NixieCircui
 
         } catch (err) { return logger.error(`NCP: sendOnOffSequence: ${err.message}`); }
     }
+    public async setServiceModeAsync() {
+        try {
+            for (let i = this.length - 1; i >= 0; i--) {
+                try {
+                    let c = this[i] as NixieCircuit;
+                    await c.setServiceModeAsync();
+                } catch (err) { logger.error(`Error stopping Nixie Circuit ${err}`); }
+            }
+
+        } catch (err) { return logger.error(`NCP: setServiceModeAsync: ${err.message}`); }
+    }
     public async setLightThemeAsync(id: number, theme: any) {
             let c: NixieCircuit = this.find(elem => elem.id === id) as NixieCircuit;
         if (typeof c === 'undefined') return Promise.reject(new Error(`NCP: Circuit ${id} could not be found to set light theme ${theme.name}.`));
@@ -92,7 +103,6 @@ export class NixieCircuitCollection extends NixieEquipmentCollection<NixieCircui
                     this.splice(i, 1);
                 } catch (err) { logger.error(`Error stopping Nixie Circuit ${err}`); }
             }
-
         } catch (err) { } // Don't bail if we have an errror.
     }
 
@@ -130,6 +140,10 @@ export class NixieCircuit extends NixieEquipment {
         let cstate = state.circuits.getItemById(circuit.id);
         cstate.startDelay = false;
         cstate.stopDelay = false;
+    }
+    public async setServiceModeAsync() {
+        let cstate = state.circuits.getItemById(this.circuit.id);
+        await this.setCircuitStateAsync(cstate, false, false);
     }
     public get id(): number { return typeof this.circuit !== 'undefined' ? this.circuit.id : -1; }
     public get eggTimerOff(): Timestamp { return typeof this.timeOn !== 'undefined' && !this.circuit.dontStop ? this.timeOn.clone().addMinutes(this.circuit.eggTimer) : undefined; }
@@ -260,6 +274,18 @@ export class NixieCircuit extends NixieEquipment {
     }
     public async setCircuitStateAsync(cstate: ICircuitState, val: boolean, scheduled: boolean = false): Promise<InterfaceServerResponse> {
         try {
+            // Lets do some special processing here for service mode
+            if (state.mode !== 0 && val) {
+                // Always set the state to off if we are in service mode for bodies.  Other circuits
+                // may actually be turned on but only if they are not one of the body circuits.
+                switch (sys.board.valueMaps.circuitFunctions.getName(this.circuit.type)) {
+                    case 'pool':
+                    case 'spa':
+                    case 'chemrelay':
+                        val = false;
+                        break;
+                }
+            }
             if (val !== cstate.isOn) {
                 logger.info(`NCP: Setting Circuit ${cstate.name} to ${val}`);
                 if (cstate.isOn && val) {
