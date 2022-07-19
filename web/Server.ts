@@ -37,6 +37,7 @@ import { logger } from "../logger/Logger";
 import { HttpInterfaceBindings } from './interfaces/httpInterface';
 import { InfluxInterfaceBindings } from './interfaces/influxInterface';
 import { MqttInterfaceBindings } from './interfaces/mqttInterface';
+import { RuleInterfaceBindings } from "./interfaces/ruleInterface";
 import { ConfigRoute } from "./services/config/Config";
 import { ConfigSocket } from "./services/config/ConfigSocket";
 import { StateRoute } from "./services/state/State";
@@ -112,6 +113,11 @@ export class WebServer {
                     case 'rest':
                     case 'http':
                         int = new HttpInterfaceServer(c.name, type);
+                        int.init(c);
+                        this._servers.push(int);
+                        break;
+                    case 'rule':
+                        int = new RuleInterfaceServer(c.name, type);
                         int.init(c);
                         this._servers.push(int);
                         break;
@@ -916,77 +922,6 @@ export class SsdpServer extends ProtoServer {
         } catch (err) { logger.error(`Error stopping SSDP server ${err.message}`); }
     }
 }
-/* RKS DEPRECATED: 05-07-22 - This did not follow the upnp rules so it was not detecting properly.  The entire class above emits the proper xml layout.
-export class SsdpServer1 extends ProtoServer {
-    // Simple service discovery protocol
-    public server: any; //node-ssdp;
-    public async init(cfg) {
-        this.uuid = cfg.uuid;
-        if (cfg.enabled) {
-            let self = this;
-
-            logger.info('Starting up SSDP server');
-            var udn = 'uuid:806f52f4-1f35-4e33-9299-' + webApp.mac();
-            // todo: should probably check if http/https is enabled at this point
-            var port = config.getSection('web').servers.http.port || 4200;
-            //console.log(port);
-            let location = 'http://' + webApp.ip() + ':' + port + '/device';
-            var SSDP = ssdp.Server;
-            this.server = new SSDP({
-                logLevel: 'INFO',
-                udn: udn,
-                location: location,
-                sourcePort: 1900
-            });
-            this.server.addUSN('urn:schemas-upnp-org:device:PoolController:1');
-
-            // start the server
-            this.server.start()
-                .then(function () {
-                    logger.silly('SSDP/UPnP Server started.');
-                    self.isRunning = true;
-                });
-
-            this.server.on('error', function (e) {
-                logger.error('error from SSDP:', e);
-            });
-        }
-    }
-    public static deviceXML() {
-        let ver = sys.appVersion;
-        let XML = `<?xml version="1.0"?>
-                        <root xmlns="urn:schemas-upnp-org:PoolController-1-0">
-                            <specVersion>
-                                <major>${ver.split('.')[0]}</major>
-                                <minor>${ver.split('.')[1]}</minor>
-                                <patch>${ver.split('.')[2]}</patch>
-                            </specVersion>
-                            <device>
-                                <deviceType>urn:echo:device:PoolController:1</deviceType>
-                                <friendlyName>NodeJS Pool Controller</friendlyName> 
-                                <manufacturer>tagyoureit</manufacturer>
-                                <manufacturerURL>https://github.com/tagyoureit/nodejs-poolController</manufacturerURL>
-                                <modelDescription>An application to control pool equipment.</modelDescription>
-                                <serialNumber>0</serialNumber>
-                    			<UDN>uuid:806f52f4-1f35-4e33-9299-${webApp.mac()}</UDN>
-                                <serviceList></serviceList>
-                            </device>
-                        </root>`;
-        return XML;
-    }
-    public async stopAsync() {
-        try {
-            if (typeof this.server !== 'undefined') {
-                this.server.stop();
-                logger.info(`Stopped SSDP server: ${this.name}`);
-            }
-        } catch (err) { logger.error(`Error stopping SSDP server ${err.message}`); }
-    }
-}
-*/
-
-
-
 export class MdnsServer extends ProtoServer {
     // Multi-cast DNS server
     public server;
@@ -1150,6 +1085,87 @@ export class HttpInterfaceServer extends ProtoServer {
         catch (err) { }
     }
 }
+export class RuleInterfaceServer extends ProtoServer {
+    public bindingsPath: string;
+    public bindings: RuleInterfaceBindings;
+    private _fileTime: Date = new Date(0);
+    private _isLoading: boolean = false;
+    public async init(cfg) {
+        this.uuid = cfg.uuid;
+        if (cfg.enabled) {
+            if (cfg.fileName && this.initBindings(cfg)) this.isRunning = true;
+        }
+    }
+    public loadBindings(cfg): boolean {
+        this._isLoading = true;
+        if (fs.existsSync(this.bindingsPath)) {
+            try {
+                let bindings = JSON.parse(fs.readFileSync(this.bindingsPath, 'utf8'));
+                let ext = extend(true, {}, typeof cfg.context !== 'undefined' ? cfg.context.options : {}, bindings);
+                this.bindings = Object.assign<RuleInterfaceBindings, any>(new RuleInterfaceBindings(cfg), ext);
+                this.isRunning = true;
+                this._isLoading = false;
+                const stats = fs.statSync(this.bindingsPath);
+                this._fileTime = stats.mtime;
+                return true;
+            }
+            catch (err) {
+                logger.error(`Error reading interface bindings file: ${this.bindingsPath}. ${err}`);
+                this.isRunning = false;
+                this._isLoading = false;
+            }
+        }
+        return false;
+    }
+    public initBindings(cfg): boolean {
+        let self = this;
+        try {
+            this.bindingsPath = path.posix.join(process.cwd(), "/web/bindings") + '/' + cfg.fileName;
+            let fileTime = new Date(0).valueOf();
+            fs.watch(this.bindingsPath, (event, fileName) => {
+                if (fileName && event === 'change') {
+                    if (self._isLoading) return; // Need a debounce here.  We will use a semaphore to cause it not to load more than once.
+                    const stats = fs.statSync(self.bindingsPath);
+                    if (stats.mtime.valueOf() === self._fileTime.valueOf()) return;
+                    self.loadBindings(cfg);
+                    logger.info(`Reloading ${cfg.name || ''} interface config: ${fileName}`);
+                }
+            });
+            this.loadBindings(cfg);
+            if (this.bindings.context.mdnsDiscovery) {
+                let srv = webApp.mdnsServer;
+                let qry = typeof this.bindings.context.mdnsDiscovery === 'string' ? { name: this.bindings.context.mdnsDiscovery, type: 'A' } : this.bindings.context.mdnsDiscovery;
+                if (typeof srv !== 'undefined') {
+                    srv.queryMdns(qry);
+                    srv.mdnsEmitter.on('mdnsResponse', (response) => {
+                        let url: URL;
+                        url = new URL(response);
+                        this.bindings.context.options.host = url.host;
+                        this.bindings.context.options.port = url.port || 80;
+                    });
+                }
+            }
+            return true;
+        }
+        catch (err) {
+            logger.error(`Error initializing interface bindings: ${err}`);
+        }
+        return false;
+    }
+    public emitToClients(evt: string, ...data: any) {
+        if (this.isRunning) {
+            // Take the bindings and map them to the appropriate http GET, PUT, DELETE, and POST.
+            this.bindings.bindEvent(evt, ...data);
+        }
+    }
+    public async stopAsync() {
+        try {
+            logger.info(`${this.name} Interface Server Shut down`);
+        }
+        catch (err) { }
+    }
+}
+
 export class InfluxInterfaceServer extends ProtoServer {
     public bindingsPath: string;
     public bindings: InfluxInterfaceBindings;
