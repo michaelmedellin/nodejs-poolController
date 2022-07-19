@@ -8,6 +8,6 @@ RUN npm run build
 
 FROM gcr.io/distroless/nodejs:18
 WORKDIR /app
-COPY --from=build-env /app ./
-USER 1000
+COPY --chown=node:node --from=build-env /app ./
+USER node
 CMD ["dist/app.js"]
