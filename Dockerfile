@@ -17,4 +17,4 @@ USER node
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --chown=node:node --from=ts-remover /app ./
-CMD ["dist/app.js"]
+CMD ["app.js"]
