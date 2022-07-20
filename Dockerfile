@@ -7,8 +7,8 @@ RUN npm run build
 
 FROM node:18 AS ts-remover
 WORKDIR /app
-COPY --from=ts-remover /app/package*.json ./
-COPY --from=ts-remover /app/dist ./
+COPY --from=build-env /app/package*.json ./
+COPY --from=build-env /app/dist ./
 RUN npm ci --production
 
 FROM gcr.io/distroless/nodejs:18
