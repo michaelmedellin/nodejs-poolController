@@ -10,11 +10,10 @@ FROM node:18 AS ts-remover
 WORKDIR /app
 COPY --from=build-env /app/package*.json ./
 COPY --from=build-env /app/dist ./
-RUN npm ci --production
+RUN npm ci --omit-dev
 
 FROM gcr.io/distroless/nodejs:18
-USER node
 ENV NODE_ENV=production
 WORKDIR /app
-COPY --chown=node:node --from=ts-remover /app ./
+COPY --from=ts-remover /app ./
 CMD ["app.js"]
