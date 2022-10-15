@@ -18,10 +18,10 @@ import * as extend from 'extend';
 import { logger } from '../../logger/Logger';
 import { Message, Outbound } from '../comms/messages/Messages';
 import { Timestamp, utils } from '../Constants';
-import { Body, ChemController, Chlorinator, Circuit, CircuitGroup, CircuitGroupCircuit, ConfigVersion, ControllerType, CustomName, CustomNameCollection, EggTimer, Equipment, Feature, Filter, General, Heater, ICircuit, ICircuitGroup, ICircuitGroupCircuit, LightGroup, LightGroupCircuit, Location, Options, Owner, PoolSystem, Pump, Schedule, sys, TempSensorCollection, Valve } from '../Equipment';
+import { Body, ChemController, ChemDoser, Chlorinator, Circuit, CircuitGroup, CircuitGroupCircuit, ConfigVersion, ControllerType, CustomName, CustomNameCollection, EggTimer, Equipment, Feature, Filter, General, Heater, ICircuit, ICircuitGroup, ICircuitGroupCircuit, LightGroup, LightGroupCircuit, Location, Options, Owner, PoolSystem, Pump, Schedule, sys, TempSensorCollection, Valve } from '../Equipment';
 import { EquipmentNotFoundError, InvalidEquipmentDataError, InvalidEquipmentIdError, BoardProcessError, InvalidOperationError } from '../Errors';
 import { ncp } from "../nixie/Nixie";
-import { BodyTempState, ChemControllerState, ChlorinatorState, CircuitGroupState, FilterState, ICircuitGroupState, ICircuitState, LightGroupState, ScheduleState, state, TemperatureState, ValveState, VirtualCircuitState } from '../State';
+import { BodyTempState, ChemControllerState, ChemDoserState, ChlorinatorState, CircuitGroupState, FilterState, ICircuitGroupState, ICircuitState, LightGroupState, ScheduleState, state, TemperatureState, ValveState, VirtualCircuitState } from '../State';
 import { RestoreResults } from '../../web/Server';
 import { group } from 'console';
 
@@ -585,6 +585,10 @@ export class byteValueMaps {
     [2, { name: 'status', desc: 'Equipment Status' }],
     [82, { name: 'ivstatus', desc: 'IntelliValve Status' }]
   ]);
+    public chemDoserTypes: byteValueMap = new byteValueMap([
+        [0, { name: 'acid', desc: 'Acid' }],
+        [1, { name: 'chlor', desc: 'Chlorine' }]
+    ]);
   public chemControllerTypes: byteValueMap = new byteValueMap([
     [0, { name: 'none', desc: 'None', ph: { min: 6.8, max: 7.6 }, orp: { min: 400, max: 800 }, hasAddress: false }],
     [1, { name: 'unknown', desc: 'Unknown', ph: { min: 6.8, max: 7.6 }, hasAddress: false }],
@@ -599,7 +603,7 @@ export class byteValueMaps {
   public chemPumpTypes: byteValueMap = new byteValueMap([
     [0, { name: 'none', desc: 'No Pump', ratedFlow: false, tank: false, remAddress: false }],
     [1, { name: 'relay', desc: 'Relay Pump', ratedFlow: true, tank: true, remAddress: true }],
-    [2, { name: 'ezo-pmp', desc: 'Altas EZO-PMP', ratedFlow: false, tank: false, remAddress: true }]
+    [2, { name: 'ezo-pmp', desc: 'Altas EZO-PMP', ratedFlow: true, tank: true, remAddress: true }]
   ]);
   public chemPhProbeTypes: byteValueMap = new byteValueMap([
     [0, { name: 'none', desc: 'No Probe' }],
@@ -670,6 +674,43 @@ export class byteValueMaps {
     [1, { name: 'nocomms', desc: 'No Communication' }],
     [2, { name: 'config', desc: 'Invalid Configuration' }]
   ]);
+    public chemDoserStatus: byteValueMap = new byteValueMap([
+        [0, { name: 'ok', desc: 'Ok' }],
+        [1, { name: 'nocomms', desc: 'No Communication' }],
+        [2, { name: 'config', desc: 'Invalid Configuration' }]
+    ]);
+    public chemDoserHardwareFaults: byteValueMap = new byteValueMap([
+        [0, { name: 'ok', desc: 'Ok - No Faults' }],
+        [2, { name: 'pump', desc: 'Pump Fault' }],
+        [5, { name: 'chlormismatch', desc: 'Chlorinator body mismatch' }],
+        [6, { name: 'invalidbody', desc: 'Body capacity not valid' }],
+        [7, { name: 'flowsensor', desc: 'Flow Sensor Fault' }]
+    ]);
+    public chemDoserAlarms: byteValueMap = new byteValueMap([
+        [0, { name: 'ok', desc: 'Ok - No alarm' }],
+        [1, { name: 'noflow', desc: 'No Flow Detected' }],
+        [32, { name: 'tankempty', desc: 'Tank Empty' }],
+        [129, { name: 'tanklow', desc: 'Tank Low' }],
+        [131, { name: 'freezeprotect', desc: 'Freeze Protection Lockout' }]
+    ]);
+    public chemDoserWarnings: byteValueMap = new byteValueMap([
+        [0, { name: 'ok', desc: 'Ok - No Warning' }],
+        [8, { name: 'invalidsetup', desc: 'Invalid Setup' }],
+        [16, { name: 'chlorinatorComms', desc: 'Chlorinator Comms Error' }]
+    ]);
+    public chemDoserLimits: byteValueMap = new byteValueMap([
+        [0, { name: 'ok', desc: 'Ok - No limits reached' }],
+        [1, { name: 'lockout', desc: 'Lockout - Chemical will not dose' }],
+        [2, { name: 'dailylimit', desc: 'Daily Limit Reached' }],
+        [128, { name: 'commslost', desc: 'Communications with Chem Doser Lost' }]
+    ]);
+    public chemDoserDosingStatus: byteValueMap = new byteValueMap([
+        [0, { name: 'dosing', desc: 'Dosing' }],
+        [1, { name: 'mixing', desc: 'Mixing' }],
+        [2, { name: 'monitoring', desc: 'Monitoring' }]
+    ]);
+
+
   public chemControllerAlarms: byteValueMap = new byteValueMap([
     [0, { name: 'ok', desc: 'Ok - No alarm' }],
     [1, { name: 'noflow', desc: 'No Flow Detected' }],
@@ -693,7 +734,6 @@ export class byteValueMaps {
     [5, { name: 'chlormismatch', desc: 'Chlorinator body mismatch' }],
     [6, { name: 'invalidbody', desc: 'Body capacity not valid' }],
     [7, { name: 'flowsensor', desc: 'Flow Sensor Fault' }]
-
   ]);
   public chemControllerWarnings: byteValueMap = new byteValueMap([
     [0, { name: 'ok', desc: 'Ok - No Warning' }],
@@ -864,8 +904,8 @@ export class SystemBoard {
   public chlorinator: ChlorinatorCommands = new ChlorinatorCommands(this);
   public heaters: HeaterCommands = new HeaterCommands(this);
   public filters: FilterCommands = new FilterCommands(this);
-  public chemControllers: ChemControllerCommands = new ChemControllerCommands(this);
-
+    public chemControllers: ChemControllerCommands = new ChemControllerCommands(this);
+    public chemDosers: ChemDoserCommands = new ChemDoserCommands(this);
   public schedules: ScheduleCommands = new ScheduleCommands(this);
   public equipmentIds: EquipmentIds = new EquipmentIds();
   //public virtualChlorinatorController = new VirtualChlorinatorController(this);
@@ -1158,20 +1198,35 @@ export class SystemCommands extends BoardCommands {
     }
     public async setTempsAsync(obj: any): Promise<TemperatureState> {
         return new Promise<TemperatureState>((resolve, reject) => {
+            let units = sys.board.valueMaps.tempUnits.getName(state.temps.units) || 'F';
             for (let prop in obj) {
                 switch (prop) {
                     case 'air':
                     case 'airSensor':
                     case 'airSensor1':
                         {
-                            let temp = obj[prop] !== null ? parseFloat(obj[prop]) : 0;
+                            let temp = 0;
+                            if (obj[prop] !== null) {
+                                if (typeof obj[prop].temperature !== 'undefined') {
+                                    temp = parseFloat(obj[prop].temperature);
+                                    if (typeof obj[prop].units === 'string') temp = utils.convert.temperature.convertUnits(temp, obj[prop].units || units, units);
+                                }
+                                else temp = parseFloat(obj[prop]);
+                            }
                             if (isNaN(temp)) return reject(new InvalidEquipmentDataError(`Invalid value for ${prop} ${obj[prop]}`, `Temps:${prop}`, obj[prop]));
                             state.temps.air = sys.equipment.tempSensors.getCalibration('air') + temp;
                         }
                         break;
                     case 'waterSensor1':
                         {
-                            let temp = obj[prop] !== null ? parseFloat(obj[prop]) : 0;
+                            let temp = 0;
+                            if (obj[prop] !== null) {
+                                if (typeof obj[prop].temperature !== 'undefined') {
+                                    temp = parseFloat(obj[prop].temperature);
+                                    if (typeof obj[prop].units === 'string') temp = utils.convert.temperature.convertUnits(temp, obj[prop].units || units, units);
+                                }
+                                else temp = parseFloat(obj[prop]);
+                            }
                             if (isNaN(temp)) return reject(new InvalidEquipmentDataError(`Invalid value for ${prop} ${obj[prop]}`, `Temps:${prop}`, obj[prop]));
                             state.temps.waterSensor1 = sys.equipment.tempSensors.getCalibration('water1') + temp;
                             let body = state.temps.bodies.getItemById(1);
@@ -1187,7 +1242,14 @@ export class SystemCommands extends BoardCommands {
                         break;
                     case 'waterSensor2':
                         {
-                            let temp = obj[prop] !== null ? parseFloat(obj[prop]) : 0;
+                            let temp = 0;
+                            if (obj[prop] !== null) {
+                                if (typeof obj[prop].temperature !== 'undefined') {
+                                    temp = parseFloat(obj[prop].temperature);
+                                    if (typeof obj[prop].units === 'string') temp = utils.convert.temperature.convertUnits(temp, obj[prop].units || units, units);
+                                }
+                                else temp = parseFloat(obj[prop]);
+                            }
                             if (isNaN(temp)) return reject(new InvalidEquipmentDataError(`Invalid value for ${prop} ${obj[prop]}`, `Temps:${prop}`, obj[prop]));
                             state.temps.waterSensor2 = sys.equipment.tempSensors.getCalibration('water2') + temp;
                             if (state.equipment.dual) {
@@ -1198,7 +1260,14 @@ export class SystemCommands extends BoardCommands {
                         break;
                     case 'waterSensor3':
                         {
-                            let temp = obj[prop] !== null ? parseFloat(obj[prop]) : 0;
+                            let temp = 0;
+                            if (obj[prop] !== null) {
+                                if (typeof obj[prop].temperature !== 'undefined') {
+                                    temp = parseFloat(obj[prop].temperature);
+                                    if (typeof obj[prop].units === 'string') temp = utils.convert.temperature.convertUnits(temp, obj[prop].units || units, units);
+                                }
+                                else temp = parseFloat(obj[prop]);
+                            }
                             if (isNaN(temp)) return reject(new InvalidEquipmentDataError(`Invalid value for ${prop} ${obj[prop]}`, `Temps:${prop}`, obj[prop]));
                             state.temps.waterSensor3 = sys.equipment.tempSensors.getCalibration('water3') + temp;
                             let body = state.temps.bodies.getItemById(3);
@@ -1207,10 +1276,15 @@ export class SystemCommands extends BoardCommands {
                         break;
                     case 'waterSensor4':
                         {
-
-                            let temp = obj[prop] !== null ? parseFloat(obj[prop]) : 0;
+                            let temp = 0;
+                            if (obj[prop] !== null) {
+                                if (typeof obj[prop].temperature !== 'undefined') {
+                                    temp = parseFloat(obj[prop].temperature);
+                                    if (typeof obj[prop].units === 'string') temp = utils.convert.temperature.convertUnits(temp, obj[prop].units || units, units);
+                                }
+                                else temp = parseFloat(obj[prop]);
+                            }
                             if (isNaN(temp)) return reject(new InvalidEquipmentDataError(`Invalid value for ${prop} ${obj[prop]}`, `Temps:${prop}`, obj[prop]));
-                            state.temps.waterSensor4 = sys.equipment.tempSensors.getCalibration('water4') + temp;
                             let body = state.temps.bodies.getItemById(4);
                             if (body.isOn) body.temp = state.temps.waterSensor4;
                         }
@@ -1220,7 +1294,14 @@ export class SystemCommands extends BoardCommands {
                     case 'solar1':
                     case 'solar':
                         {
-                            let temp = obj[prop] !== null ? parseFloat(obj[prop]) : 0;
+                            let temp = 0;
+                            if (obj[prop] !== null) {
+                                if (typeof obj[prop].temperature !== 'undefined') {
+                                    temp = parseFloat(obj[prop].temperature);
+                                    if (typeof obj[prop].units === 'string') temp = utils.convert.temperature.convertUnits(temp, obj[prop].units || units, units);
+                                }
+                                else temp = parseFloat(obj[prop]);
+                            }
                             if (isNaN(temp)) return reject(new InvalidEquipmentDataError(`Invalid value for ${prop} ${obj[prop]}`, `Temps:${prop}`, obj[prop]));
                             state.temps.solar = sys.equipment.tempSensors.getCalibration('solar1') + temp;
                         }
@@ -1228,7 +1309,14 @@ export class SystemCommands extends BoardCommands {
                     case 'solar2':
                     case 'solarSensor2':
                         {
-                            let temp = obj[prop] !== null ? parseFloat(obj[prop]) : 0;
+                            let temp = 0;
+                            if (obj[prop] !== null) {
+                                if (typeof obj[prop].temperature !== 'undefined') {
+                                    temp = parseFloat(obj[prop].temperature);
+                                    if (typeof obj[prop].units === 'string') temp = utils.convert.temperature.convertUnits(temp, obj[prop].units || units, units);
+                                }
+                                else temp = parseFloat(obj[prop]);
+                            }
                             if (isNaN(temp)) return reject(new InvalidEquipmentDataError(`Invalid value for ${prop} ${obj[prop]}`, `Temps:${prop}`, obj[prop]));
                             state.temps.solarSensor2 = sys.equipment.tempSensors.getCalibration('solar2') + temp;
                         }
@@ -1236,7 +1324,14 @@ export class SystemCommands extends BoardCommands {
                     case 'solar3':
                     case 'solarSensor3':
                         {
-                            let temp = obj[prop] !== null ? parseFloat(obj[prop]) : 0;
+                            let temp = 0;
+                            if (obj[prop] !== null) {
+                                if (typeof obj[prop].temperature !== 'undefined') {
+                                    temp = parseFloat(obj[prop].temperature);
+                                    if (typeof obj[prop].units === 'string') temp = utils.convert.temperature.convertUnits(temp, obj[prop].units || units, units);
+                                }
+                                else temp = parseFloat(obj[prop]);
+                            }
                             if (isNaN(temp)) return reject(new InvalidEquipmentDataError(`Invalid value for ${prop} ${obj[prop]}`, `Temps:${prop}`, obj[prop]));
                             state.temps.solarSensor3 = sys.equipment.tempSensors.getCalibration('solar3') + temp;
                         }
@@ -1244,7 +1339,14 @@ export class SystemCommands extends BoardCommands {
                     case 'solar4':
                     case 'solarSensor4':
                         {
-                            let temp = obj[prop] !== null ? parseFloat(obj[prop]) : 0;
+                            let temp = 0;
+                            if (obj[prop] !== null) {
+                                if (typeof obj[prop].temperature !== 'undefined') {
+                                    temp = parseFloat(obj[prop].temperature);
+                                    if (typeof obj[prop].units === 'string') temp = utils.convert.temperature.convertUnits(temp, obj[prop].units || units, units);
+                                }
+                                else temp = parseFloat(obj[prop]);
+                            }
                             if (isNaN(temp)) return reject(new InvalidEquipmentDataError(`Invalid value for ${prop} ${obj[prop]}`, `Temps:${prop}`, obj[prop]));
                             state.temps.solarSensor4 = sys.equipment.tempSensors.getCalibration('solar4') + temp;
                         }
@@ -1665,30 +1767,36 @@ export class BodyCommands extends BoardCommands {
     sys.board.heaters.syncHeaterStates();
     return Promise.resolve(bstate);
   }
-  public getHeatSources(bodyId: number) {
-    let heatSources = [];
-    let heatTypes = this.board.heaters.getInstalledHeaterTypes(bodyId);
-    heatSources.push(this.board.valueMaps.heatSources.transformByName('nochange'));
-    if (heatTypes.total > 0) heatSources.push(this.board.valueMaps.heatSources.transformByName('off'));
-    if (heatTypes.gas > 0) heatSources.push(this.board.valueMaps.heatSources.transformByName('heater'));
-    if (heatTypes.mastertemp > 0) heatSources.push(this.board.valueMaps.heatSources.transformByName('mastertemp'));
-    if (heatTypes.solar > 0) {
-      let hm = this.board.valueMaps.heatSources.transformByName('solar');
-      heatSources.push(hm);
-      if (heatTypes.total > 1) heatSources.push(this.board.valueMaps.heatSources.transformByName('solarpref'));
+    public getHeatSources(bodyId: number) {
+        let heatSources = [];
+        let heatTypes = this.board.heaters.getInstalledHeaterTypes(bodyId);
+        heatSources.push(this.board.valueMaps.heatSources.transformByName('nochange'));
+        if (heatTypes.total > 0) heatSources.push(this.board.valueMaps.heatSources.transformByName('off'));
+        if (heatTypes.gas > 0) heatSources.push(this.board.valueMaps.heatSources.transformByName('heater'));
+        if (heatTypes.mastertemp > 0) heatSources.push(this.board.valueMaps.heatSources.transformByName('mastertemp'));
+        if (heatTypes.solar > 0) {
+            let hm = this.board.valueMaps.heatSources.transformByName('solar');
+            heatSources.push(hm);
+            if (heatTypes.total > 1) heatSources.push(this.board.valueMaps.heatSources.transformByName('solarpref'));
+        }
+        if (heatTypes.heatpump > 0) {
+            let hm = this.board.valueMaps.heatSources.transformByName('heatpump');
+            heatSources.push(hm);
+            if (heatTypes.total > 1) heatSources.push(this.board.valueMaps.heatSources.transformByName('heatpumppref'));
+        }
+        if (heatTypes.ultratemp > 0) {
+            let hm = this.board.valueMaps.heatSources.transformByName('ultratemp');
+            heatSources.push(hm);
+            if (heatTypes.total > 1) heatSources.push(this.board.valueMaps.heatSources.transformByName('ultratemppref'));
+        }
+        if (heatTypes.hybrid > 0) {
+            heatSources.push(this.board.valueMaps.heatSources.transformByName('hybheat'));
+            heatSources.push(this.board.valueMaps.heatSources.transformByName('hybheatpump'));
+            heatSources.push(this.board.valueMaps.heatSources.transformByName('hybhybrid'));
+            heatSources.push(this.board.valueMaps.heatSources.transformByName('hybdual'));
+        }
+        return heatSources;
     }
-    if (heatTypes.heatpump > 0) {
-      let hm = this.board.valueMaps.heatSources.transformByName('heatpump');
-      heatSources.push(hm);
-      if (heatTypes.total > 1) heatSources.push(this.board.valueMaps.heatSources.transformByName('heatpumppref'));
-    }
-    if (heatTypes.ultratemp > 0) {
-      let hm = this.board.valueMaps.heatSources.transformByName('ultratemp');
-      heatSources.push(hm);
-      if (heatTypes.total > 1) heatSources.push(this.board.valueMaps.heatSources.transformByName('ultratemppref'));
-    }
-    return heatSources;
-  }
     public getHeatModes(bodyId: number) {
         let heatModes = [];
         sys.board.heaters.updateHeaterServices();
@@ -1697,10 +1805,12 @@ export class BodyCommands extends BoardCommands {
         heatModes.push(this.board.valueMaps.heatModes.transformByName('off')); // In IC fw 1.047 off is no longer 0.
         let heatTypes = this.board.heaters.getInstalledHeaterTypes(bodyId);
         if (heatTypes.hybrid > 0) {
-            heatModes.push(sys.board.valueMaps.heatModes.transformByName('heatpump'));
-            heatModes.push(sys.board.valueMaps.heatModes.transformByName('heater'));
-            heatModes.push(sys.board.valueMaps.heatModes.transformByName('heatpumppref'));
-            heatModes.push(sys.board.valueMaps.heatModes.transformByName('dual'));
+            // RKS: 08-24-22 Unfortunately we mistakenly thought that these needed to be matched to the other heater types.  The heat modes
+            // are unique for the hybrid heater.
+            heatModes.push(sys.board.valueMaps.heatModes.transformByName('hybheat'));
+            heatModes.push(sys.board.valueMaps.heatModes.transformByName('hybheatpump'));
+            heatModes.push(sys.board.valueMaps.heatModes.transformByName('hybhybrid'));
+            heatModes.push(sys.board.valueMaps.heatModes.transformByName('hybdual'));
             //heatModes = this.board.valueMaps.heatModes.toArray();
         }
         if (heatTypes.gas > 0) {
@@ -2167,11 +2277,11 @@ export class CircuitCommands extends BoardCommands {
                         if (!remove) {
                             for (let j = 0; j < poolStates.length && !bState; j++) {
                                 let hstatus = sys.board.valueMaps.heatStatus.getName(poolStates[j].heatStatus);
-                                if (hstatus === 'heater' || hstatus === 'hpheat' || hstatus === 'mtheat') bState = true;
+                                if (hstatus === 'heater' || hstatus === 'hpheat' || hstatus === 'mtheat' || hstatus === 'hybheat') bState = true;
                             }
                             for (let j = 0; j < spaStates.length && !bState; j++) {
-                                let hstatus = sys.board.valueMaps.heatStatus.getName(poolStates[j].heatStatus);
-                                if (hstatus === 'heater' || hstatus === 'hpheat' || hstatus === 'mtheat') bState = true;
+                                let hstatus = sys.board.valueMaps.heatStatus.getName(spaStates[j].heatStatus);
+                                if (hstatus === 'heater' || hstatus === 'hpheat' || hstatus === 'mtheat' || hstatus === 'hybheat') bState = true;
                             }
                         }
                         break;
@@ -2585,58 +2695,59 @@ export class CircuitCommands extends BoardCommands {
     return cf;
   }
   public getCircuitNames() { return [...sys.board.valueMaps.circuitNames.toArray(), ...sys.board.valueMaps.customNames.toArray()]; }
-  public async setCircuitAsync(data: any): Promise<ICircuit> {
-    try {
-      let id = parseInt(data.id, 10);
-      if (id <= 0 || typeof data.id === 'undefined') {
-        // We are adding a new circuit.  If we are operating as a nixie controller then we need to start this
-        // circuit outside the range of circuits that can be defined on the panel.  For any of the non-OCP controllers
-        // these are added within the range of the circuits starting with 1.  For all others these are added with an id > 255.
-        switch (state.equipment.controllerType) {
-          case 'intellicenter':
-          case 'intellitouch':
-          case 'easytouch':
-            id = sys.circuits.getNextEquipmentId(new EquipmentIdRange(255, 300));
-            break;
-          default:
-            id = sys.circuits.getNextEquipmentId(sys.board.equipmentIds.circuits, [1, 6]);
-            break;
-        }
-      }
-      if (isNaN(id)) return Promise.reject(new InvalidEquipmentIdError(`Invalid circuit id: ${data.id}`, data.id, 'Circuit'));
-      //if (!sys.board.equipmentIds.circuits.isInRange(id)) return Promise.reject(new InvalidEquipmentIdError(`Circuit id is out of range: ${id}`, data.id, 'Circuit'));;
-      if (typeof data.id !== 'undefined') {
-        let circuit = sys.circuits.getItemById(id, true);
-        let scircuit = state.circuits.getItemById(id, true);
-        scircuit.isActive = circuit.isActive = true;
-        circuit.master = 1;
-        scircuit.isOn = false;
-        if (data.name) circuit.name = scircuit.name = data.name;
-        else if (!circuit.name && !data.name) circuit.name = scircuit.name = `circuit${data.id}`;
-        if (typeof data.type !== 'undefined' || typeof circuit.type === 'undefined') {
-          circuit.type = scircuit.type = parseInt(data.type, 10) || 0;
-        }
-        if (id === 6) circuit.type = sys.board.valueMaps.circuitFunctions.getValue('pool');
-        if (id === 1 && sys.equipment.shared) circuit.type = sys.board.valueMaps.circuitFunctions.getValue('spa');
-        if (typeof data.freeze !== 'undefined' || typeof circuit.freeze === 'undefined') circuit.freeze = utils.makeBool(data.freeze) || false;
-        if (typeof data.showInFeatures !== 'undefined' || typeof data.showInFeatures === 'undefined') circuit.showInFeatures = scircuit.showInFeatures = utils.makeBool(data.showInFeatures) || true;
-        if (typeof data.dontStop !== 'undefined' && utils.makeBool(data.dontStop) === true) data.eggTimer = 1440;
-        if (typeof data.eggTimer !== 'undefined' || typeof circuit.eggTimer === 'undefined') circuit.eggTimer = parseInt(data.eggTimer, 10) || 0;
-        if (typeof data.connectionId !== 'undefined') circuit.connectionId = data.connectionId;
-        if (typeof data.deviceBinding !== 'undefined') circuit.deviceBinding = data.deviceBinding;
-        if (typeof data.showInFeatures !== 'undefined') scircuit.showInFeatures = circuit.showInFeatures = utils.makeBool(data.showInFeatures);
-        circuit.dontStop = circuit.eggTimer === 1440;
+    public async setCircuitAsync(data: any): Promise<ICircuit> {
+        try {
+            let id = parseInt(data.id, 10);
+            if (id <= 0 || typeof data.id === 'undefined') {
+                // We are adding a new circuit.  If we are operating as a nixie controller then we need to start this
+                // circuit outside the range of circuits that can be defined on the panel.  For any of the non-OCP controllers
+                // these are added within the range of the circuits starting with 1.  For all others these are added with an id > 255.
+                switch (state.equipment.controllerType) {
+                    case 'intellicenter':
+                    case 'intellitouch':
+                    case 'easytouch':
+                    case 'suntouch':
+                        id = sys.circuits.getNextEquipmentId(new EquipmentIdRange(255, 300));
+                        break;
+                    default:
+                        id = sys.circuits.getNextEquipmentId(sys.board.equipmentIds.circuits, [1, 6]);
+                        break;
+                }
+            }
+            if (isNaN(id)) return Promise.reject(new InvalidEquipmentIdError(`Invalid circuit id: ${data.id}`, data.id, 'Circuit'));
+            //if (!sys.board.equipmentIds.circuits.isInRange(id)) return Promise.reject(new InvalidEquipmentIdError(`Circuit id is out of range: ${id}`, data.id, 'Circuit'));;
+            if (typeof data.id !== 'undefined') {
+                let circuit = sys.circuits.getItemById(id, true);
+                let scircuit = state.circuits.getItemById(id, true);
+                scircuit.isActive = circuit.isActive = true;
+                circuit.master = 1;
+                scircuit.isOn = false;
+                if (data.name) circuit.name = scircuit.name = data.name;
+                else if (!circuit.name && !data.name) circuit.name = scircuit.name = `circuit${data.id}`;
+                if (typeof data.type !== 'undefined' || typeof circuit.type === 'undefined') {
+                    circuit.type = scircuit.type = parseInt(data.type, 10) || 0;
+                }
+                if (id === 6) circuit.type = sys.board.valueMaps.circuitFunctions.getValue('pool');
+                if (id === 1 && sys.equipment.shared) circuit.type = sys.board.valueMaps.circuitFunctions.getValue('spa');
+                if (typeof data.freeze !== 'undefined' || typeof circuit.freeze === 'undefined') circuit.freeze = utils.makeBool(data.freeze) || false;
+                if (typeof data.showInFeatures !== 'undefined' || typeof data.showInFeatures === 'undefined') circuit.showInFeatures = scircuit.showInFeatures = utils.makeBool(data.showInFeatures);
+                if (typeof data.dontStop !== 'undefined' && utils.makeBool(data.dontStop) === true) data.eggTimer = 1440;
+                if (typeof data.eggTimer !== 'undefined' || typeof circuit.eggTimer === 'undefined') circuit.eggTimer = parseInt(data.eggTimer, 10) || 0;
+                if (typeof data.connectionId !== 'undefined') circuit.connectionId = data.connectionId;
+                if (typeof data.deviceBinding !== 'undefined') circuit.deviceBinding = data.deviceBinding;
+                if (typeof data.showInFeatures !== 'undefined') scircuit.showInFeatures = circuit.showInFeatures = utils.makeBool(data.showInFeatures);
+                circuit.dontStop = circuit.eggTimer === 1440;
 
-        sys.emitEquipmentChange();
-        state.emitEquipmentChanges();
-        if (circuit.master === 1) await ncp.circuits.setCircuitAsync(circuit, data);
-        return Promise.resolve(circuit);
-      }
-      else
-        return Promise.reject(new Error('Circuit id has not been defined'));
+                sys.emitEquipmentChange();
+                state.emitEquipmentChanges();
+                if (circuit.master === 1) await ncp.circuits.setCircuitAsync(circuit, data);
+                return Promise.resolve(circuit);
+            }
+            else
+                return Promise.reject(new Error('Circuit id has not been defined'));
+        }
+        catch (err) { logger.error(`setCircuitAsync error with ${data}. ${err}`); return Promise.reject(err); }
     }
-    catch (err) { logger.error(`setCircuitAsync error with ${data}. ${err}`); return Promise.reject(err); }
-  }
   public async setCircuitGroupAsync(obj: any): Promise<CircuitGroup> {
     let group: CircuitGroup = null;
     let sgroup: CircuitGroupState = null;
@@ -3097,32 +3208,33 @@ export class FeatureCommands extends BoardCommands {
     } catch (err) { logger.error(`Error validating features for restore: ${err.message}`); }
   }
 
-  public async setFeatureAsync(obj: any): Promise<Feature> {
-    let id = parseInt(obj.id, 10);
-    if (id <= 0 || isNaN(id)) {
-      id = sys.features.getNextEquipmentId(sys.board.equipmentIds.features);
+    public async setFeatureAsync(obj: any): Promise<Feature> {
+        let id = parseInt(obj.id, 10);
+        if (id <= 0 || isNaN(id)) {
+            id = sys.features.getNextEquipmentId(sys.board.equipmentIds.features);
+        }
+        if (isNaN(id)) return Promise.reject(new InvalidEquipmentIdError(`Invalid feature id: ${obj.id}`, obj.id, 'Feature'));
+        if (!sys.board.equipmentIds.features.isInRange(id)) return Promise.reject(new InvalidEquipmentIdError(`Feature id out of range: ${id}: ${sys.board.equipmentIds.features.start} to ${sys.board.equipmentIds.features.end}`, obj.id, 'Feature'));
+        let feature = sys.features.getItemById(id, true);
+        let sfeature = state.features.getItemById(id, true);
+        feature.isActive = true;
+        sfeature.isOn = false;
+        if (obj.nameId) {
+            feature.nameId = sfeature.nameId = obj.nameId;
+            feature.name = sfeature.name = sys.board.valueMaps.circuitNames.get(obj.nameId);
+        }
+        else if (obj.name) feature.name = sfeature.name = obj.name;
+        else if (!feature.name && !obj.name) feature.name = sfeature.name = `feature${obj.id}`;
+        if (typeof obj.type !== 'undefined') feature.type = sfeature.type = parseInt(obj.type, 10);
+        else if (!feature.type && typeof obj.type !== 'undefined') feature.type = sfeature.type = 0;
+        if (typeof obj.freeze !== 'undefined') feature.freeze = utils.makeBool(obj.freeze);
+        if (typeof obj.showInFeatures !== 'undefined') feature.showInFeatures = sfeature.showInFeatures = utils.makeBool(obj.showInFeatures);
+        sfeature.showInFeatures = feature.showInFeatures;
+        if (typeof obj.dontStop !== 'undefined' && utils.makeBool(obj.dontStop) === true) obj.eggTimer = 1440;
+        if (typeof obj.eggTimer !== 'undefined') feature.eggTimer = parseInt(obj.eggTimer, 10);
+        feature.dontStop = feature.eggTimer === 1440;
+        return new Promise<Feature>((resolve, reject) => { resolve(feature); });
     }
-    if (isNaN(id)) return Promise.reject(new InvalidEquipmentIdError(`Invalid feature id: ${obj.id}`, obj.id, 'Feature'));
-    if (!sys.board.equipmentIds.features.isInRange(id)) return Promise.reject(new InvalidEquipmentIdError(`Feature id out of range: ${id}: ${sys.board.equipmentIds.features.start} to ${sys.board.equipmentIds.features.end}`, obj.id, 'Feature'));
-    let feature = sys.features.getItemById(id, true);
-    let sfeature = state.features.getItemById(id, true);
-    feature.isActive = true;
-    sfeature.isOn = false;
-    if (obj.nameId) {
-      feature.nameId = sfeature.nameId = obj.nameId;
-      feature.name = sfeature.name = sys.board.valueMaps.circuitNames.get(obj.nameId);
-    }
-    else if (obj.name) feature.name = sfeature.name = obj.name;
-    else if (!feature.name && !obj.name) feature.name = sfeature.name = `feature${obj.id}`;
-    if (typeof obj.type !== 'undefined') feature.type = sfeature.type = parseInt(obj.type, 10);
-    else if (!feature.type && typeof obj.type !== 'undefined') feature.type = sfeature.type = 0;
-    if (typeof obj.freeze !== 'undefined') feature.freeze = utils.makeBool(obj.freeze);
-    if (typeof obj.showInFeatures !== 'undefined') feature.showInFeatures = sfeature.showInFeatures = utils.makeBool(obj.showInFeatures);
-    if (typeof obj.dontStop !== 'undefined' && utils.makeBool(obj.dontStop) === true) obj.eggTimer = 1440;
-    if (typeof obj.eggTimer !== 'undefined') feature.eggTimer = parseInt(obj.eggTimer, 10);
-    feature.dontStop = feature.eggTimer === 1440;
-    return new Promise<Feature>((resolve, reject) => { resolve(feature); });
-  }
   public async deleteFeatureAsync(obj: any): Promise<Feature> {
     let id = parseInt(obj.id, 10);
     if (isNaN(id)) return Promise.reject(new InvalidEquipmentIdError(`Invalid feature id: ${obj.id}`, obj.id, 'Feature'));
@@ -3773,6 +3885,7 @@ export class ScheduleCommands extends BoardCommands {
     // if we make it this far, nothing is impacting us
     return false;
   }
+  public async updateSunriseSunsetAsync():Promise<boolean> {return Promise.resolve(false);};
 }
 export class HeaterCommands extends BoardCommands {
     public async restore(rest: { poolConfig: any, poolState: any }, ctx: any, res: RestoreResults): Promise<boolean> {
@@ -4308,7 +4421,7 @@ export class HeaterCommands extends BoardCommands {
                                     if (hstatus === 'heater') isHeating = isOn = true;
                                     break;
                                 case 'hybrid':
-                                    if (hstatus === 'mtheat' || hstatus === 'heater' || hstatus === 'dual') isHeating = isOn = true;
+                                    if (hstatus === 'mtheat' || hstatus === 'heater' || hstatus === 'dual' || hstatus === 'hybheat') isHeating = isOn = true;
                                     break;
                                 case 'ultratemp':
                                 case 'heatpump':
@@ -4339,7 +4452,7 @@ export class HeaterCommands extends BoardCommands {
                                     else if (hstate.isOn !== isOn || hstate.isCooling !== isCooling) {
                                         await ncp.heaters.setHeaterStateAsync(hstate, isOn, isCooling);
                                     }
-                                } catch (err) { logger.error(err.message); }
+                                } catch (err) { logger.error(`Error setting heater state ${hstate.name}: ${err.message}`); }
                             })();
                             else {
                                 hstate.isOn = isOn;
@@ -4363,7 +4476,7 @@ export class HeaterCommands extends BoardCommands {
                         try {
                             await ncp.heaters.setHeaterStateAsync(hstate, false, false);
                             hstate.bodyId = 0;
-                        } catch (err) { logger.error(err.message); }
+                        } catch (err) { logger.error(`Error turning off heater ${heater.name}: ${err.message}`); }
                     })();
                     else {
                         hstate.isOn = false;
@@ -4555,60 +4668,224 @@ export class ValveCommands extends BoardCommands {
     return arrIds;
   }
 }
+export class ChemDoserCommands extends BoardCommands {
+    public async restore(rest: { poolConfig: any, poolState: any }, ctx: any, res: RestoreResults): Promise<boolean> {
+        try {
+            // First delete the chemDosers that should be removed.
+            for (let i = 0; i < ctx.chemDosers.remove.length; i++) {
+                let c = ctx.chemDosers.remove[i];
+                try {
+                    await sys.board.chemDosers.deleteChemDoserAsync(c);
+                    res.addModuleSuccess('chemDoser', `Remove: ${c.id}-${c.name}`);
+                } catch (err) { res.addModuleError('chemDoser', `Remove: ${c.id}-${c.name}: ${err.message}`); }
+            }
+            for (let i = 0; i < ctx.chemDosers.update.length; i++) {
+                let c = ctx.chemDosers.update[i];
+                try {
+                    await sys.board.chemDosers.setChemDoserAsync(c);
+                    res.addModuleSuccess('chemDoser', `Update: ${c.id}-${c.name}`);
+                } catch (err) { res.addModuleError('chemDoser', `Update: ${c.id}-${c.name}: ${err.message}`); }
+            }
+            for (let i = 0; i < ctx.chemDosers.add.length; i++) {
+                let c = ctx.chemDosers.add[i];
+                try {
+                    // pull a little trick to first add the data then perform the update.  This way we won't get a new id or
+                    // it won't error out.
+                    let chem = sys.chemDosers.getItemById(c.id, true);
+                    await sys.board.chemDosers.setChemDoserAsync(c);
+                    res.addModuleSuccess('chemDoser', `Add: ${c.id}-${c.name}`);
+                } catch (err) { res.addModuleError('chemDoser', `Add: ${c.id}-${c.name}: ${err.message}`); }
+            }
+            return true;
+        } catch (err) { logger.error(`Error restoring chemDosers: ${err.message}`); res.addModuleError('system', `Error restoring chemDosers: ${err.message}`); return false; }
+    }
+    public async validateRestore(rest: { poolConfig: any, poolState: any }): Promise<{ errors: any, warnings: any, add: any, update: any, remove: any }> {
+        try {
+            let ctx = { errors: [], warnings: [], add: [], update: [], remove: [] };
+            // Look at chemDosers.
+            let cfg = rest.poolConfig;
+            for (let i = 0; i < cfg.chemDosers.length; i++) {
+                let r = cfg.chemDosers[i];
+                let c = sys.chemDosers.find(elem => r.id === elem.id);
+                if (typeof c === 'undefined') ctx.add.push(r);
+                else if (JSON.stringify(c.get()) !== JSON.stringify(r)) ctx.update.push(r);
+            }
+            for (let i = 0; i < sys.chemDosers.length; i++) {
+                let c = sys.chemDosers.getItemByIndex(i);
+                let r = cfg.chemDosers.find(elem => elem.id == c.id);
+                if (typeof r === 'undefined') ctx.remove.push(c.get(true));
+            }
+            return ctx;
+        } catch (err) { logger.error(`Error validating chemDosers for restore: ${err.message}`); }
+    }
+
+    public async deleteChemDoserAsync(data: any): Promise<ChemDoser> {
+        try {
+            let id = typeof data.id !== 'undefined' ? parseInt(data.id, 10) : -1;
+            if (typeof id === 'undefined' || isNaN(id)) return Promise.reject(new InvalidEquipmentIdError(`Invalid Chem Controller Id`, id, 'chemDoser'));
+            let chem = sys.chemDosers.getItemById(id);
+            let schem = state.chemDosers.getItemById(id);
+            schem.isActive = chem.isActive = false;
+            await ncp.chemDosers.removeById(id);
+            sys.chemDosers.removeItemById(id);
+            state.chemDosers.removeItemById(id);
+            sys.emitEquipmentChange();
+            return Promise.resolve(chem);
+        } catch (err) { logger.error(`Error deleting chem controller ${err.message}`); }
+    }
+    public async manualDoseAsync(data: any): Promise<ChemDoserState> {
+        try {
+            let id = typeof data.id !== 'undefined' ? parseInt(data.id) : undefined;
+            if (isNaN(id)) return Promise.reject(new InvalidEquipmentDataError(`Cannot begin dosing: Invalid chem doser id was provided ${data.id}`, 'chemDoser', data.id));
+            let chem = sys.chemDosers.find(elem => elem.id === id);
+            if (typeof chem === 'undefined') return Promise.reject(new InvalidEquipmentDataError(`Cannot begin dosing: Chem doser was not found ${data.id}`, 'chemDoser', data.id));
+            // Let's check the type.  AFAIK you cannot manual dose an IntelliChem.
+            // We are down to the nitty gritty.  Let REM Chem do its thing.
+            await ncp.chemDosers.manualDoseAsync(chem.id, data);
+            return Promise.resolve(state.chemDosers.getItemById(id));
+        } catch (err) { return Promise.reject(err); }
+    }
+    public async calibrateDoseAsync(data: any): Promise<ChemDoserState> {
+        try {
+            let id = typeof data.id !== 'undefined' ? parseInt(data.id) : undefined;
+            if (isNaN(id)) return Promise.reject(new InvalidEquipmentDataError(`Cannot begin calibration: Invalid chem doser id was provided ${data.id}`, 'chemDoser', data.id));
+            let chem = sys.chemDosers.find(elem => elem.id === id);
+            if (typeof chem === 'undefined') return Promise.reject(new InvalidEquipmentDataError(`Cannot begin calibration: Chem doser was not found ${data.id}`, 'chemDoser', data.id));
+            // We are down to the nitty gritty.  Let REM Chem do its thing.
+            await ncp.chemDosers.calibrateDoseAsync(chem.id, data);
+            return Promise.resolve(state.chemDosers.getItemById(id));
+        } catch (err) { return Promise.reject(err); }
+    }
+
+    public async cancelDosingAsync(data: any): Promise<ChemDoserState> {
+        try {
+            let id = typeof data.id !== 'undefined' ? parseInt(data.id) : undefined;
+            if (isNaN(id)) return Promise.reject(new InvalidEquipmentDataError(`Cannot cancel dosing: Invalid chem doser id was provided ${data.id}`, 'chemDoser', data.id));
+            let chem = sys.chemDosers.find(elem => elem.id === id);
+            if (typeof chem === 'undefined') return Promise.reject(new InvalidEquipmentDataError(`Cannot cancel dosing: Chem doser was not found ${data.id}`, 'chemDoser', data.id));
+            // We are down to the nitty gritty.  Let REM Chem do its thing.
+            await ncp.chemDosers.cancelDoseAsync(chem.id, data);
+            return Promise.resolve(state.chemDosers.getItemById(id));
+        } catch (err) { return Promise.reject(err); }
+    }
+    public async manualMixAsync(data: any): Promise<ChemDoserState> {
+        try {
+            let id = typeof data.id !== 'undefined' ? parseInt(data.id) : undefined;
+            if (isNaN(id)) return Promise.reject(new InvalidEquipmentDataError(`Cannot begin mixing: Invalid chem doser id was provided ${data.id}`, 'chemDoser', data.id));
+            let chem = sys.chemDosers.find(elem => elem.id === id);
+            if (typeof chem === 'undefined') return Promise.reject(new InvalidEquipmentDataError(`Cannot begin mixing: Chem doser was not found ${data.id}`, 'chemDoser', data.id));
+            // We are down to the nitty gritty.  Let REM Chem do its thing.
+            await ncp.chemDosers.manualMixAsync(chem.id, data);
+            return Promise.resolve(state.chemDosers.getItemById(id));
+        } catch (err) { return Promise.reject(err); }
+    }
+    public async cancelMixingAsync(data: any): Promise<ChemDoserState> {
+        try {
+            let id = typeof data.id !== 'undefined' ? parseInt(data.id) : undefined;
+            if (isNaN(id)) return Promise.reject(new InvalidEquipmentDataError(`Cannot cancel mixing: Invalid chem doser id was provided ${data.id}`, 'chemDoser', data.id));
+            let chem = sys.chemDosers.find(elem => elem.id === id);
+            if (typeof chem === 'undefined') return Promise.reject(new InvalidEquipmentDataError(`Cannot cancel mixing: Chem doser was not found ${data.id}`, 'chemDoser', data.id));
+            // We are down to the nitty gritty.  Let REM Chem do its thing.
+            await ncp.chemDosers.cancelMixingAsync(chem.id, data);
+            return Promise.resolve(state.chemDosers.getItemById(id));
+        } catch (err) { return Promise.reject(err); }
+    }
+    public findChemDoser(data: any) {
+        let id = parseInt(data.id, 10);
+        if (!isNaN(id)) return sys.chemDosers.find(x => x.id === id);
+    }
+    public async setChemDoserAsync(data: any): Promise<ChemDoser> {
+        // The following are the rules related to when an OCP is present.
+        // ==============================================================
+        // 1. IntelliChem cannot be controlled/polled via Nixie, since there is no enable/disable from the OCP at this point we don't know who is in control of polling.
+        // 2. With *Touch Commands will be sent directly to the IntelliChem controller in the hopes that the OCP will pick it up. Turns out this is not correct.  The TouchBoard now has the proper interface.
+        // 3. njspc will communicate to the OCP for IntelliChem control via the configuration interface.
+
+        // The following are the rules related to when no OCP is present.
+        // =============================================================
+        // 1. All chemDosers will be controlled via Nixie (IntelliChem, REM Chem).
+        try {
+            let chem = sys.board.chemDosers.findChemDoser(data);
+            let isAdd = typeof chem === 'undefined';
+            if (isAdd && sys.equipment.maxChemDosers <= sys.chemDosers.length) return Promise.reject(new InvalidEquipmentDataError(`The maximum number of chem controllers have been added to your controller`, 'chemDoser', sys.equipment.maxChemDosers));
+            if (isAdd) {
+                // At this point we are going to add the chem controller no matter what.
+                data.id = sys.chemDosers.getNextEquipmentId(new EquipmentIdRange(1, 10));
+                chem = sys.chemDosers.getItemById(data.id, true);
+            }
+            chem.isActive = true;
+            // So here is the thing.  If you have an OCP then the IntelliChem must be controlled by that.
+            // the messages on the bus will talk back to the OCP so if you do not do this mayhem will ensue.
+            await ncp.chemDosers.setDoserAsync(chem, data);
+            return Promise.resolve(chem);
+        }
+        catch (err) { return Promise.reject(err); }
+    }
+    public async setChemDoserStateAsync(data: any): Promise<ChemDoserState> {
+        let chem = sys.board.chemDosers.findChemDoser(data);
+        if (typeof chem === 'undefined') return Promise.reject(new InvalidEquipmentIdError(`A valid chem doser could not be found for id:${data.id}`, data.id, 'chemDoser'));
+        data.id = chem.id;
+        logger.info(`Setting ${chem.name} data ${chem.master}`);
+        if (chem.master === 1) await ncp.chemDosers.setDoserAsync(chem, data);
+        else await sys.board.chemDosers.setChemDoserAsync(data);
+        let schem = state.chemDosers.getItemById(chem.id, true);
+        return Promise.resolve(schem);
+    }
+}
 export class ChemControllerCommands extends BoardCommands {
-  public async restore(rest: { poolConfig: any, poolState: any }, ctx: any, res: RestoreResults): Promise<boolean> {
-    try {
-      // First delete the chemControllers that should be removed.
-      for (let i = 0; i < ctx.chemControllers.remove.length; i++) {
-        let c = ctx.chemControllers.remove[i];
+    public async restore(rest: { poolConfig: any, poolState: any }, ctx: any, res: RestoreResults): Promise<boolean> {
         try {
-          await sys.board.chemControllers.deleteChemControllerAsync(c);
-          res.addModuleSuccess('chemController', `Remove: ${c.id}-${c.name}`);
-        } catch (err) { res.addModuleError('chemController', `Remove: ${c.id}-${c.name}: ${err.message}`); }
-      }
-      for (let i = 0; i < ctx.chemControllers.update.length; i++) {
-        let c = ctx.chemControllers.update[i];
+            // First delete the chemControllers that should be removed.
+            for (let i = 0; i < ctx.chemControllers.remove.length; i++) {
+                let c = ctx.chemControllers.remove[i];
+                try {
+                    await sys.board.chemControllers.deleteChemControllerAsync(c);
+                    res.addModuleSuccess('chemController', `Remove: ${c.id}-${c.name}`);
+                } catch (err) { res.addModuleError('chemController', `Remove: ${c.id}-${c.name}: ${err.message}`); }
+            }
+            for (let i = 0; i < ctx.chemControllers.update.length; i++) {
+                let c = ctx.chemControllers.update[i];
+                try {
+                    await sys.board.chemControllers.setChemControllerAsync(c);
+                    res.addModuleSuccess('chemController', `Update: ${c.id}-${c.name}`);
+                } catch (err) { res.addModuleError('chemController', `Update: ${c.id}-${c.name}: ${err.message}`); }
+            }
+            for (let i = 0; i < ctx.chemControllers.add.length; i++) {
+                let c = ctx.chemControllers.add[i];
+                try {
+                    // pull a little trick to first add the data then perform the update.  This way we won't get a new id or
+                    // it won't error out.
+                    let chem = sys.chemControllers.getItemById(c.id, true);
+                    // RSG 11.24.21.  setChemControllerAsync will only set the type/address if it thinks it's new.   
+                    // For a restore, if we set the type/address here it will pass the validation steps.
+                    chem.type = c.type;
+                    // chem.address = c.address;
+                    await sys.board.chemControllers.setChemControllerAsync(c);
+                    res.addModuleSuccess('chemController', `Add: ${c.id}-${c.name}`);
+                } catch (err) { res.addModuleError('chemController', `Add: ${c.id}-${c.name}: ${err.message}`); }
+            }
+            return true;
+        } catch (err) { logger.error(`Error restoring chemControllers: ${err.message}`); res.addModuleError('system', `Error restoring chemControllers: ${err.message}`); return false; }
+    }
+    public async validateRestore(rest: { poolConfig: any, poolState: any }): Promise<{ errors: any, warnings: any, add: any, update: any, remove: any }> {
         try {
-          await sys.board.chemControllers.setChemControllerAsync(c);
-          res.addModuleSuccess('chemController', `Update: ${c.id}-${c.name}`);
-        } catch (err) { res.addModuleError('chemController', `Update: ${c.id}-${c.name}: ${err.message}`); }
-      }
-      for (let i = 0; i < ctx.chemControllers.add.length; i++) {
-        let c = ctx.chemControllers.add[i];
-        try {
-          // pull a little trick to first add the data then perform the update.  This way we won't get a new id or
-          // it won't error out.
-          let chem = sys.chemControllers.getItemById(c.id, true);
-          // RSG 11.24.21.  setChemControllerAsync will only set the type/address if it thinks it's new.   
-          // For a restore, if we set the type/address here it will pass the validation steps.
-          chem.type = c.type;
-          // chem.address = c.address;
-          await sys.board.chemControllers.setChemControllerAsync(c);
-          res.addModuleSuccess('chemController', `Add: ${c.id}-${c.name}`);
-        } catch (err) { res.addModuleError('chemController', `Add: ${c.id}-${c.name}: ${err.message}`); }
-      }
-      return true;
-    } catch (err) { logger.error(`Error restoring chemControllers: ${err.message}`); res.addModuleError('system', `Error restoring chemControllers: ${err.message}`); return false; }
-  }
-  public async validateRestore(rest: { poolConfig: any, poolState: any }): Promise<{ errors: any, warnings: any, add: any, update: any, remove: any }> {
-    try {
-      let ctx = { errors: [], warnings: [], add: [], update: [], remove: [] };
-      // Look at chemControllers.
-      let cfg = rest.poolConfig;
-      for (let i = 0; i < cfg.chemControllers.length; i++) {
-        let r = cfg.chemControllers[i];
-        let c = sys.chemControllers.find(elem => r.id === elem.id);
-        if (typeof c === 'undefined') ctx.add.push(r);
-        else if (JSON.stringify(c.get()) !== JSON.stringify(r)) ctx.update.push(r);
-      }
-      for (let i = 0; i < sys.chemControllers.length; i++) {
-        let c = sys.chemControllers.getItemByIndex(i);
-        let r = cfg.chemControllers.find(elem => elem.id == c.id);
-        if (typeof r === 'undefined') ctx.remove.push(c.get(true));
-      }
-      return ctx;
-    } catch (err) { logger.error(`Error validating chemControllers for restore: ${err.message}`); }
-  }
+            let ctx = { errors: [], warnings: [], add: [], update: [], remove: [] };
+            // Look at chemControllers.
+            let cfg = rest.poolConfig;
+            for (let i = 0; i < cfg.chemControllers.length; i++) {
+                let r = cfg.chemControllers[i];
+                let c = sys.chemControllers.find(elem => r.id === elem.id);
+                if (typeof c === 'undefined') ctx.add.push(r);
+                else if (JSON.stringify(c.get()) !== JSON.stringify(r)) ctx.update.push(r);
+            }
+            for (let i = 0; i < sys.chemControllers.length; i++) {
+                let c = sys.chemControllers.getItemByIndex(i);
+                let r = cfg.chemControllers.find(elem => elem.id == c.id);
+                if (typeof r === 'undefined') ctx.remove.push(c.get(true));
+            }
+            return ctx;
+        } catch (err) { logger.error(`Error validating chemControllers for restore: ${err.message}`); }
+    }
 
   public async deleteChemControllerAsync(data: any): Promise<ChemController> {
     try {
@@ -4624,20 +4901,35 @@ export class ChemControllerCommands extends BoardCommands {
       return Promise.resolve(chem);
     } catch (err) { logger.error(`Error deleting chem controller ${err.message}`); }
   }
-  public async manualDoseAsync(data: any): Promise<ChemControllerState> {
-    try {
-      let id = typeof data.id !== 'undefined' ? parseInt(data.id) : undefined;
-      if (isNaN(id)) return Promise.reject(new InvalidEquipmentDataError(`Cannot begin dosing: Invalid chem controller id was provided ${data.id}`, 'chemController', data.id));
-      let chem = sys.chemControllers.find(elem => elem.id === id);
-      if (typeof chem === 'undefined') return Promise.reject(new InvalidEquipmentDataError(`Cannot begin dosing: Chem controller was not found ${data.id}`, 'chemController', data.id));
-      // Let's check the type.  AFAIK you cannot manual dose an IntelliChem.
-      let type = sys.board.valueMaps.chemControllerTypes.transform(chem.type);
-      if (type.name !== 'rem') return Promise.reject(new InvalidEquipmentDataError(`You can only perform manual dosing on REM Chem controllers. Cannot manually dose ${type.desc}`, 'chemController', data.id));
-      // We are down to the nitty gritty.  Let REM Chem do its thing.
-      await ncp.chemControllers.manualDoseAsync(chem.id, data);
-      return Promise.resolve(state.chemControllers.getItemById(id));
-    } catch (err) { return Promise.reject(err); }
-  }
+    public async manualDoseAsync(data: any): Promise<ChemControllerState> {
+        try {
+            let id = typeof data.id !== 'undefined' ? parseInt(data.id) : undefined;
+            if (isNaN(id)) return Promise.reject(new InvalidEquipmentDataError(`Cannot begin dosing: Invalid chem controller id was provided ${data.id}`, 'chemController', data.id));
+            let chem = sys.chemControllers.find(elem => elem.id === id);
+            if (typeof chem === 'undefined') return Promise.reject(new InvalidEquipmentDataError(`Cannot begin dosing: Chem controller was not found ${data.id}`, 'chemController', data.id));
+            // Let's check the type.  AFAIK you cannot manual dose an IntelliChem.
+            let type = sys.board.valueMaps.chemControllerTypes.transform(chem.type);
+            if (type.name !== 'rem') return Promise.reject(new InvalidEquipmentDataError(`You can only perform manual dosing on REM Chem controllers. Cannot manually dose ${type.desc}`, 'chemController', data.id));
+            // We are down to the nitty gritty.  Let REM Chem do its thing.
+            await ncp.chemControllers.manualDoseAsync(chem.id, data);
+            return Promise.resolve(state.chemControllers.getItemById(id));
+        } catch (err) { return Promise.reject(err); }
+    }
+    public async calibrateDoseAsync(data: any): Promise<ChemControllerState> {
+        try {
+            let id = typeof data.id !== 'undefined' ? parseInt(data.id) : undefined;
+            if (isNaN(id)) return Promise.reject(new InvalidEquipmentDataError(`Cannot begin calibration: Invalid chem controller id was provided ${data.id}`, 'chemController', data.id));
+            let chem = sys.chemControllers.find(elem => elem.id === id);
+            if (typeof chem === 'undefined') return Promise.reject(new InvalidEquipmentDataError(`Cannot begin calibration: Chem controller was not found ${data.id}`, 'chemController', data.id));
+            // Let's check the type.  AFAIK you cannot manual dose an IntelliChem.
+            let type = sys.board.valueMaps.chemControllerTypes.transform(chem.type);
+            if (type.name !== 'rem') return Promise.reject(new InvalidEquipmentDataError(`You can only perform calibration dosing on REM Chem controllers. Cannot calibrate ${type.desc}`, 'chemController', data.id));
+            // We are down to the nitty gritty.  Let REM Chem do its thing.
+            await ncp.chemControllers.calibrateDoseAsync(chem.id, data);
+            return Promise.resolve(state.chemControllers.getItemById(id));
+        } catch (err) { return Promise.reject(err); }
+    }
+
   public async cancelDosingAsync(data: any): Promise<ChemControllerState> {
     try {
       let id = typeof data.id !== 'undefined' ? parseInt(data.id) : undefined;

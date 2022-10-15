@@ -22,10 +22,9 @@ import * as util from 'util';
 import { logger } from '../logger/Logger';
 import { webApp } from '../web/Server';
 import { ControllerType, Timestamp, utils, Heliotrope } from './Constants';
-import { sys, Chemical, ChemController } from './Equipment';
+import { sys, Chemical, ChemController, ChemicalTank, ChemicalPump } from './Equipment';
 import { versionCheck } from '../config/VersionCheck';
-import { EquipmentStateMessage } from './comms/messages/status/EquipmentStateMessage';
-import { DataLogger, DataLoggerEntry, IDataLoggerEntry } from '../logger/DataLogger';
+import { DataLogger, DataLoggerEntry } from '../logger/DataLogger';
 import { delayMgr } from './Lockouts';
 
 export class State implements IState {
@@ -140,6 +139,7 @@ export class State implements IState {
             _state.filters = this.filters.getExtended();
             _state.schedules = this.schedules.getExtended();
             _state.chemControllers = this.chemControllers.getExtended();
+            _state.chemDosers = this.chemDosers.getExtended();
             _state.delays = delayMgr.serialize();
             return _state;
         }
@@ -160,7 +160,7 @@ export class State implements IState {
         try {
             if (this._timerDirty) clearTimeout(this._timerDirty);
             this.persist();
-            if (sys.controllerType === ControllerType.Virtual) {
+/*             if (sys.controllerType === ControllerType.Virtual) {
                 for (let i = 0; i < state.temps.bodies.length; i++) {
                     state.temps.bodies.getItemByIndex(i).isOn = false;
                 }
@@ -170,7 +170,7 @@ export class State implements IState {
                 for (let i = 0; i < state.features.length; i++) {
                     state.features.getItemByIndex(i).isOn = false;
                 }
-            }
+            } */
             logger.info('State process shut down');
         } catch (err) { logger.error(`Error shutting down state process: ${err.message}`); }
     }
@@ -265,6 +265,9 @@ export class State implements IState {
         for (let i = 0; i < state.chemControllers.length; i++) {
             state.chemControllers.getItemByIndex(i).hasChanged = true;
         }
+        for (let i = 0; i < state.chemDosers.length; i++) {
+            state.chemDosers.getItemByIndex(i).hasChanged = true;
+        }
         state.emitEquipmentChanges();
     }
     public emitEquipmentChanges() {
@@ -341,6 +344,7 @@ export class State implements IState {
     public get isInitialized(): boolean { return typeof (this.data.status) !== 'undefined' && this.data.status.val !== 0; }
     public init() {
         console.log(`Init state for Pool Controller`);
+  
         var sdata = this.loadFile(this.statePath, {});
         sdata = extend(true, { mode: { val: -1 }, temps: { units: { val: 0, name: 'F', desc: 'Fahrenheit' } } }, sdata);
         if (typeof sdata.temps !== 'undefined' && typeof sdata.temps.bodies !== 'undefined') {
@@ -358,6 +362,7 @@ export class State implements IState {
         EqStateCollection.removeNullIds(sdata.lightGroups);
         EqStateCollection.removeNullIds(sdata.remotes);
         EqStateCollection.removeNullIds(sdata.chemControllers);
+        EqStateCollection.removeNullIds(sdata.chemDosers);
         EqStateCollection.removeNullIds(sdata.filters);
         var self = this;
         let pnlTime = typeof sdata.time !== 'undefined' ? new Date(sdata.time) : new Date();
@@ -365,6 +370,9 @@ export class State implements IState {
         this._dt = new Timestamp(pnlTime);
         this._dt.milliseconds = 0;
         this.data = sdata;
+        this.equipment = new EquipmentState(this.data, 'equipment');
+        this.equipment.messages.clear();
+
         //this.onchange(state, function () { self.dirty = true; });
         this._dt.emitter.on('change', function () {
             self.data.time = self._dt.format();
@@ -378,7 +386,6 @@ export class State implements IState {
             versionCheck.checkGitRemote();
         });
         this.status = 0; // Initializing
-        this.equipment = new EquipmentState(this.data, 'equipment');
         this.equipment.controllerType = this._controllerType;
         this.temps = new TemperatureState(this.data, 'temps');
         this.pumps = new PumpStateCollection(this.data, 'pumps');
@@ -392,6 +399,7 @@ export class State implements IState {
         this.lightGroups = new LightGroupStateCollection(this.data, 'lightGroups');
         this.virtualCircuits = new VirtualCircuitStateCollection(this.data, 'virtualCircuits');
         this.chemControllers = new ChemControllerStateCollection(this.data, 'chemControllers');
+        this.chemDosers = new ChemDoserStateCollection(this.data, 'chemDosers');
         this.covers = new CoverStateCollection(this.data, 'covers');
         this.filters = new FilterStateCollection(this.data, 'filters');
         this.comms = new CommsState();
@@ -433,6 +441,7 @@ export class State implements IState {
     public covers: CoverStateCollection;
     public filters: FilterStateCollection;
     public chemControllers: ChemControllerStateCollection;
+    public chemDosers: ChemDoserStateCollection;
     public comms: CommsState;
     public appVersion: AppVersionState;
 
@@ -813,12 +822,14 @@ export class EquipmentMessages extends EqStateCollection<EquipmentMessage> {
                 rem = this.data.splice(i, 1);
             }
         }
+        if (typeof rem !== 'undefined') webApp.emitToClients('sysmessages', this.get(true));
         return typeof rem !== 'undefined' ? new EquipmentMessage(rem, undefined, undefined) : undefined;
     }
     // For lack of a better term category includes the equipment identifier if supplied.
     public removeItemByCategory(category: string) {
         let rem: EquipmentMessage[] = [];
         let cmr = EquipmentMessage.parseMessageCode(category);
+        let hasChanges = false;
         for (let i = this.data.length - 1; i >= 0; i--) {
             if (typeof (this.data[i].code) !== 'undefined') {
                 let cm = EquipmentMessage.parseMessageCode(this.data.code);
@@ -827,17 +838,20 @@ export class EquipmentMessages extends EqStateCollection<EquipmentMessage> {
                         if (typeof cmr.messageId === 'undefined' || cm.messageId === cmr.messageId) {
                             let data = this.data.splice(i, 1);
                             rem.push(new EquipmentMessage(data, undefined, undefined));
+                            hasChanges = true;
                         }
                     }
                 }
             }
         }
+        if (hasChanges) webApp.emitToClients('sysmessages', this.get(true));
         return rem;
     }
     public setMessageByCode(code: string, severity: string | number, message: string): EquipmentMessage {
         let msg = this.getItemByCode(code, true);
         msg.severity = sys.board.valueMaps.eqMessageSeverities.encode(severity, 0);
         msg.message = message;
+        webApp.emitToClients('sysmessages', this.get(true));
         return msg;
     }
 }
@@ -1223,7 +1237,10 @@ export class CircuitGroupState extends EqState implements ICircuitGroupState, IC
     public getExtended() {
         let sgrp = this.get(true); // Always operate on a copy.
         if (typeof sgrp.showInFeatures === 'undefined') sgrp.showInFeatures = true;
+        
         let cgrp = sys.circuitGroups.getItemById(this.id);
+        sgrp.showInFeatures = this.showInFeatures = cgrp.showInFeatures;
+        sgrp.isActive = this.isActive = cgrp.isActive;
         sgrp.circuits = [];
         for (let i = 0; i < cgrp.circuits.length; i++) {
             let cgc = cgrp.circuits.getItemByIndex(i).get(true);
@@ -1377,6 +1394,7 @@ export class BodyTempState extends EqState {
         if (typeof this.data.startDelay === 'undefined') this.data.startDelay = false;
         if (typeof this.data.stopDelay === 'undefined') this.data.stopDelay = false;
         if (typeof this.data.showInDashboard === 'undefined') this.data.showInDashboard = true;
+        if (typeof this.data.heatMode === 'undefined') this.data.heatMode = sys.board.valueMaps.heatModes.transform(0);
     }
     public get id(): number { return this.data.id; }
     public set id(val: number) { this.setDataVal('id', val); }
@@ -1589,7 +1607,6 @@ export class FeatureStateCollection extends EqStateCollection<FeatureState> {
         }
     }
 }
-
 export class FeatureState extends EqState implements ICircuitState {
     public dataName: string = 'feature';
     public initData() {
@@ -2073,8 +2090,278 @@ export class ChemControllerStateCollection extends EqStateCollection<ChemControl
         }
     }
 }
+export class ChemDoserStateCollection extends EqStateCollection<ChemDoserState> {
+    public createItem(data: any): ChemDoserState { return new ChemDoserState(data); }
+    public cleanupState() {
+        for (let i = this.data.length - 1; i >= 0; i--) {
+            if (isNaN(this.data[i].id)) this.data.splice(i, 1);
+            else {
+                if (typeof sys.chemControllers.find(elem => elem.id === this.data[i].id) === 'undefined') this.removeItemById(this.data[i].id);
+            }
+        }
+        // Make sure we have at least the items that exist in the config.
+        let cfg = sys.chemControllers.toArray();
+        for (let i = 0; i < cfg.length; i++) {
+            let c = cfg[i];
+            let s = this.getItemById(cfg[i].id, true);
+            s.body = c.body;
+            s.name = c.name;
+            s.type = c.type;
+            s.isActive = c.isActive;
+        }
+    }
+}
+export interface IChemControllerState {
+    flowDetected: boolean;
+    isBodyOn: boolean;
+    emitEquipmentChange: () => void;
+}
+export interface IChemicalState {
+    enabled: boolean;
+    currentDose: ChemicalDoseState;
+    manualDosing: boolean;
+    manualMixing: boolean;
+    dosingTimeRemaining: number;
+    dosingVolumeRemaining: number;
+    volumeDosed: number;
+    timeDosed: number;
+    endDose: (dtEnd?: Date, status?: string, volumeDosed?: number, timeDosed?: number) => ChemicalDoseState;
+    appendDose: (volumeDosed: number, timeDosed: number) => ChemicalDoseState;
+    tank: ChemicalTankState;
+    pump: ChemicalPumpState;
+    doseHistory: ChemicalDoseState[];
+    freezeProtect: boolean;
+    mixTimeRemaining: number;
+    delayTimeRemaining: number;
+    flowDelay: boolean;
+    dailyVolumeDosed: number;
+    chemType: string;
+    dosingStatus: number;
+    chemController: IChemControllerState;
+    chlor?: ChemicalChlorState;
+    
+}
+export class ChemDoserState extends EqState implements IChemicalState, IChemControllerState {
+    public initData() {
+        if (typeof this.data.flowDetected === 'undefined') this.data.flowDetected = false;
+        if (typeof this.data.flowSensor === 'undefined') this.data.flowSensor = {};
+        if (typeof this.data.alarms === 'undefined') { let a = this.alarms; }
+        if (typeof this.data.warnings === 'undefined') { let w = this.warnings; }
+        if (typeof this.data.tank === 'undefined') this.data.tank = { capacity: 0, level: 0, units: 0 };
+        if (typeof this.data.pump === 'undefined') this.data.pump = { isDosing: false };
+        if (typeof this.data.dosingTimeRemaining === 'undefined') this.data.dosingTimeRemaining = 0;
+        if (typeof this.data.delayTimeRemaining === 'undefined') this.data.delayTimeRemaining = 0;
+        if (typeof this.data.dosingVolumeRemaining === 'undefined') this.data.dosingVolumeRemaining = 0;
+        if (typeof this.data.doseVolume === 'undefined') this.data.doseVolume = 0;
+        if (typeof this.data.doseTime === 'undefined') this.data.doseTime = 0;
+        if (typeof this.data.lockout === 'undefined') this.data.lockout = false;
+        if (typeof this.data.level === 'undefined') this.data.level = 0;
+        if (typeof this.data.mixTimeRemaining === 'undefined') this.data.mixTimeRemaining = 0;
+        if (typeof this.data.dailyLimitReached === 'undefined') this.data.dailyLimitReached = false;
+        if (typeof this.data.manualDosing === 'undefined') this.data.manualDosing = false;
+        if (typeof this.data.manualMixing === 'undefined') this.data.manualMixing = false;
+        if (typeof this.data.flowDelay === 'undefined') this.data.flowDelay = false;
+        if (typeof this.data.dosingStatus === 'undefined') this.dosingStatus = 2;
+        if (typeof this.data.enabled === 'undefined') this.data.enabled = true;
+        if (typeof this.data.freezeProtect === 'undefined') this.data.freezeProtect = false;
+        if (typeof this.data.setpoint === 'undefined') this.data.setpoint = 100;
+        if (typeof this.data.suspendDosing === 'undefined') this.data.suspendDosing = false;
+    }
+    public dataName: string = 'chemDoser';
+    public get id(): number { return this.data.id; }
+    public set id(val: number) { this.setDataVal('id', val); }
+    public get isActive(): boolean { return this.data.isActive; }
+    public set isActive(val: boolean) { this.setDataVal('isActive', val); }
+    public get name(): string { return this.data.name; }
+    public set name(val: string) { this.setDataVal('name', val); }
+    public get setpoint(): number { return this.data.setpoint; }
+    public set setpoint(val: number) { this.setDataVal('setpoint', val); }
 
-export class ChemControllerState extends EqState {
+    public get lastComm(): number { return this.data.lastComm || 0; }
+    public set lastComm(val: number) { this.setDataVal('lastComm', val, false); }
+    public get isBodyOn(): boolean { return this.data.isBodyOn; }
+    public set isBodyOn(val: boolean) { this.data.isBodyOn = val; }
+    public get flowDetected(): boolean { return this.data.flowDetected; }
+    public set flowDetected(val: boolean) { this.data.flowDetected = val; }
+    public get status(): number { return typeof (this.data.status) !== 'undefined' ? this.data.status.val : -1; }
+    public set status(val: number) {
+        if (this.status !== val) {
+            this.data.status = sys.board.valueMaps.chemDoserStatus.transform(val);
+            this.hasChanged = true;
+        }
+    }
+    public get body(): number { return typeof (this.data.body) !== 'undefined' ? this.data.body.val : -1; }
+    public set body(val: number) {
+        if (this.body !== val) {
+            this.data.body = sys.board.valueMaps.bodies.transform(val);
+            this.hasChanged = true;
+        }
+    }
+    public get type(): number { return typeof (this.data.type) !== 'undefined' ? this.data.type.val : 0; }
+    public set type(val: number) {
+        if (this.type !== val) {
+            this.data.type = sys.board.valueMaps.chemDoserTypes.transform(val);
+            this.data.chemType = this.data.type.desc;
+            this.hasChanged = true;
+        }
+    }
+    public get enabled(): boolean { return this.data.enabled; }
+    public set enabled(val: boolean) { this.data.enabled = val; }
+    public get freezeProtect(): boolean { return this.data.freezeProtect; }
+    public set freezeProtect(val: boolean) { this.data.freezeProtect = val; }
+    public get suspendDosing(): boolean { return this.data.suspendDosing; }
+    public set suspendDosing(val: boolean) { this.data.suspendDosing = val; }
+    public get chemType(): string { return this.data.chemType; }
+    public get delayTimeRemaining(): number { return this.data.delayTimeRemaining; }
+    public set delayTimeRemaining(val: number) { this.setDataVal('delayTimeRemaining', val); }
+    public get doseTime(): number { return this.data.doseTime; }
+    public set doseTime(val: number) { this.setDataVal('doseTime', val); }
+    public get doseVolume(): number { return this.data.doseVolume; }
+    public set doseVolume(val: number) { this.setDataVal('doseVolume', val); }
+    public get dosingTimeRemaining(): number { return this.data.dosingTimeRemaining; }
+    public set dosingTimeRemaining(val: number) { this.setDataVal('dosingTimeRemaining', val); }
+    public get dosingVolumeRemaining(): number { return this.data.dosingVolumeRemaining; }
+    public set dosingVolumeRemaining(val: number) { this.setDataVal('dosingVolumeRemaining', val); }
+    public get volumeDosed(): number { return this.data.volumeDosed; }
+    public set volumeDosed(val: number) { this.setDataVal('volumeDosed', val); }
+    public get timeDosed(): number { return this.data.timeDosed; }
+    public set timeDosed(val: number) { this.setDataVal('timeDosed', val); }
+    public get dailyVolumeDosed(): number { return this.data.dailyVolumeDosed; }
+    public set dailyVolumeDosed(val: number) { this.setDataVal('dailyVolumeDosed', val); }
+    public get mixTimeRemaining(): number { return this.data.mixTimeRemaining; }
+    public set mixTimeRemaining(val: number) { this.setDataVal('mixTimeRemaining', val); }
+    public get dosingStatus(): number { return typeof (this.data.dosingStatus) !== 'undefined' ? this.data.dosingStatus.val : undefined; }
+    public set dosingStatus(val: number) {
+        if (this.dosingStatus !== val) {
+            logger.debug(`${this.chemType} dosing status changed from ${sys.board.valueMaps.chemControllerDosingStatus.getName(this.dosingStatus)} (${this.dosingStatus}) to ${sys.board.valueMaps.chemControllerDosingStatus.getName(val)}(${val})`);
+            this.data.dosingStatus = sys.board.valueMaps.chemControllerDosingStatus.transform(val);
+            this.hasChanged = true;
+        }
+    }
+    public get lockout(): boolean { return utils.makeBool(this.data.lockout); }
+    public set lockout(val: boolean) { this.setDataVal('lockout', val); }
+    public get flowDelay(): boolean { return utils.makeBool(this.data.flowDelay); }
+    public set flowDelay(val: boolean) { this.data.flowDelay = val; }
+    public get manualDosing(): boolean { return utils.makeBool(this.data.manualDosing); }
+    public set manualDosing(val: boolean) { this.setDataVal('manualDosing', val); }
+    public get manualMixing(): boolean { return utils.makeBool(this.data.manualMixing); }
+    public set manualMixing(val: boolean) { this.setDataVal('manualMixing', val); }
+    public get dailyLimitReached(): boolean { return utils.makeBool(this.data.dailyLimitReached); }
+    public set dailyLimitReached(val: boolean) { this.data.dailyLimitReached = val; }
+    public get tank(): ChemicalTankState { return new ChemicalTankState(this.data, 'tank', this); }
+    public get pump(): ChemicalPumpState { return new ChemicalPumpState(this.data, 'pump', this); }
+    public get flowSensor(): ChemicalFlowSensorState { return new ChemicalFlowSensorState(this.data, 'flowSensor', this); }
+    public get warnings(): ChemDoserStateWarnings { return new ChemDoserStateWarnings(this.data, 'warnings', this); }
+    public get alarms(): ChemDoserStateAlarms { return new ChemDoserStateAlarms(this.data, 'alarms', this); }
+    public calcDoseHistory(): number {
+        // The dose history records will already exist when the state is loaded.  There are enough records to cover 24 hours in this
+        // instance. We need to prune off any records that are > 24 hours when we calculate.
+        let dailyVolumeDosed = 0;
+        let dt = new Date();
+        let dtMax = dt.setTime(dt.getTime() - (24 * 60 * 60 * 1000));
+        for (let i = this.doseHistory.length - 1; i >= 0; i--) {
+            let dh = this.doseHistory[i];
+            if (typeof dh.end !== 'undefined'
+                && typeof dh.end.getTime == 'function'
+                && dh.end.getTime() > dtMax
+                && dh.volumeDosed > 0) dailyVolumeDosed += dh.volumeDosed;
+            else {
+                logger.info(`Removing dose history ${dh.chem} ${dh.end}`);
+                this.doseHistory.splice(i, 1);
+            }
+        }
+        return dailyVolumeDosed + (typeof this.currentDose !== 'undefined' ? this.currentDose.volumeDosed : 0);
+    }
+    public startDose(dtStart: Date = new Date(), method: string = 'auto', volume: number = 0, volumeDosed: number = 0, time: number = 0, timeDosed: number = 0): ChemicalDoseState {
+        this.currentDose = new ChemicalDoseState();
+        this.currentDose.type = this.chemType;
+        this.currentDose.id = this.id;
+        this.currentDose.start = dtStart;
+        this.currentDose.method = method;
+        this.currentDose.volumeDosed = volumeDosed;
+        this.doseVolume = this.currentDose.volume = volume;
+        this.currentDose.chem = this.chemType;
+        this.currentDose.time = time;
+        this.currentDose._timeDosed = timeDosed;
+        this.volumeDosed = this.currentDose.volumeDosed;
+        this.timeDosed = Math.round(timeDosed / 1000);
+        this.dosingTimeRemaining = this.currentDose.timeRemaining;
+        this.dosingVolumeRemaining = this.currentDose.volumeRemaining;
+        this.doseTime = Math.round(this.currentDose.time / 1000);
+        this.currentDose._isManual = method === 'manual';
+        this.currentDose.status = 'current';
+        //webApp.emitToClients(`chemicalDose`, this.currentDose);
+        return this.currentDose;
+    }
+    public endDose(dtEnd: Date = new Date(), status: string = 'completed', volumeDosed: number = 0, timeDosed: number = 0): ChemicalDoseState {
+        let dose = this.currentDose;
+        if (typeof dose !== 'undefined') {
+            dose.type = 'Peristaltic';
+            dose._timeDosed += timeDosed;
+            dose.volumeDosed += volumeDosed;
+            dose.end = dtEnd;
+            dose.timeDosed = dose._timeDosed / 1000;
+            dose.status = status;
+            this.volumeDosed = dose.volumeDosed;
+            this.timeDosed = Math.round(dose._timeDosed / 1000);
+            this.dosingTimeRemaining = 0;
+            this.dosingVolumeRemaining = 0;
+            if (dose.volumeDosed > 0 || dose.timeDosed > 0) {
+                this.dailyVolumeDosed = this.calcDoseHistory();
+                this.doseHistory.unshift(dose);
+                DataLogger.writeEnd(`chemDosage_${this.chemType}.log`, dose);
+                setImmediate(() => { webApp.emitToClients(`chemicalDose`, dose); });
+            }
+            this.currentDose = undefined;
+        }
+        return dose;
+    }
+    // Appends dose information to the current dose.  The time here is in ms and our target will be in sec.
+    public appendDose(volumeDosed: number, timeDosed: number): ChemicalDoseState {
+        let dose = typeof this.currentDose !== 'undefined' ? this.currentDose : this.currentDose = this.startDose();
+        dose._timeDosed += timeDosed;
+        dose.volumeDosed += volumeDosed;
+        dose.timeDosed = dose._timeDosed / 1000;
+        dose.type = 'Peristaltic';
+        this.volumeDosed = dose.volumeDosed;
+        this.timeDosed = Math.round(dose._timeDosed / 1000);
+        this.dosingTimeRemaining = dose.timeRemaining;
+        this.dosingVolumeRemaining = dose.volumeRemaining;
+
+        if (dose.volumeDosed > 0 || timeDosed > 0) setImmediate(() => { webApp.emitToClients(`chemicalDose`, dose); });
+        return dose;
+    }
+    public get currentDose(): ChemicalDoseState {
+        if (typeof this.data.currentDose === 'undefined') return this.data.currentDose;
+        if (typeof this.data.currentDose.save !== 'function') this.data.currentDose = new ChemicalDoseState(this.data.currentDose);
+        return this.data.currentDose;
+    }
+    public set currentDose(val: ChemicalDoseState) {
+        this.setDataVal('currentDose', val);
+    }
+    public get doseHistory(): ChemicalDoseState[] {
+        if (typeof this.data.doseHistory === 'undefined') this.data.doseHistory = [];
+        if (this.data.doseHistory.length === 0) return this.data.doseHistory;
+        if (typeof this.data.doseHistory[0].save !== 'function') {
+            let arr: ChemicalDoseState[] = [];
+            for (let i = 0; i < this.data.doseHistory.length; i++) {
+                arr.push(new ChemicalDoseState(this.data.doseHistory[i]));
+            }
+            this.data.doseHistory = arr;
+        }
+        return this.data.doseHistory;
+    }
+    public set doseHistory(val: ChemicalDoseState[]) { this.setDataVal('doseHistory', val); }
+    public get chemController() { return this; }
+    public getExtended(): any {
+        let chem = sys.chemDosers.getItemById(this.id);
+        let obj = this.get(true);
+        obj = extend(true, obj, chem.getExtended());
+        return obj;
+    }
+}
+
+export class ChemControllerState extends EqState implements IChemControllerState {
     public initData() {
         if (typeof this.data.saturationIndex === 'undefined') this.data.saturationIndex = 0;
         if (typeof this.data.flowDetected === 'undefined') this.data.flowDetected = false;
@@ -2320,7 +2607,7 @@ export class ChemControllerState extends EqState {
         return obj;
     }
 }
-export class ChemicalState extends ChildEqState {
+export class ChemicalState extends ChildEqState implements IChemicalState {
     public initData() {
         if (typeof this.data.probe === 'undefined') this.data.probe = {};
         if (typeof this.data.tank === 'undefined') this.data.tank = { capacity: 0, level: 0, units: 0 };
@@ -2363,6 +2650,7 @@ export class ChemicalState extends ChildEqState {
     }
     public startDose(dtStart: Date = new Date(), method: string = 'auto', volume: number = 0, volumeDosed: number = 0, time: number = 0, timeDosed: number = 0): ChemicalDoseState {
         this.currentDose = new ChemicalDoseState();
+        this.currentDose.type = this.type;
         this.currentDose.id = this.chemController.id;
         this.currentDose.start = dtStart;
         this.currentDose.method = method;
@@ -2396,9 +2684,9 @@ export class ChemicalState extends ChildEqState {
             this.timeDosed = Math.round(dose._timeDosed / 1000);
             this.dosingTimeRemaining = 0;
             this.dosingVolumeRemaining = 0;
-            if (dose.volumeDosed > 0) {
-                this.doseHistory.unshift(dose);
+            if (dose.volumeDosed > 0 || dose.timeDosed > 0) {
                 this.dailyVolumeDosed = this.calcDoseHistory();
+                this.doseHistory.unshift(dose);
                 DataLogger.writeEnd(`chemDosage_${this.chemType}.log`, dose);
                 setImmediate(() => { webApp.emitToClients(`chemicalDose`, dose); });
             }
@@ -2411,11 +2699,12 @@ export class ChemicalState extends ChildEqState {
         let dose = typeof this.currentDose !== 'undefined' ? this.currentDose : this.currentDose = this.startDose();
         dose._timeDosed += timeDosed;
         dose.volumeDosed += volumeDosed;
+        dose.timeDosed = dose._timeDosed/1000;
         this.volumeDosed = dose.volumeDosed;
         this.timeDosed = Math.round(dose._timeDosed / 1000);
         this.dosingTimeRemaining = dose.timeRemaining;
         this.dosingVolumeRemaining = dose.volumeRemaining;
-        if (dose.volumeDosed > 0) setImmediate(() => { webApp.emitToClients(`chemicalDose`, dose); });
+        if (dose.volumeDosed > 0 || timeDosed > 0) setImmediate(() => { webApp.emitToClients(`chemicalDose`, dose); });
         return dose;
     }
     public get currentDose(): ChemicalDoseState {
@@ -2443,6 +2732,7 @@ export class ChemicalState extends ChildEqState {
         let dH = this.demandHistory;
         dH.appendDemand(time, val);
     }
+    public get type() { return this.data.type; };
     public get demandHistory() { return new ChemicalDemandState(this.data, 'demandHistory', this) };
     public get enabled(): boolean { return this.data.enabled; }
     public set enabled(val: boolean) { this.data.enabled = val; }
@@ -2507,6 +2797,7 @@ export class ChemicalPhState extends ChemicalState {
     public initData() {
         super.initData();
         if (typeof this.data.chemType === 'undefined') this.data.chemType = 'none';
+        if (typeof this.data.type === 'undefined') this.data.type = 'ph';
     }
     public getConfig() {
         let schem = this.chemController;
@@ -2581,6 +2872,8 @@ export class ChemicalORPState extends ChemicalState {
         if (typeof this.data.probe === 'undefined') this.data.probe = {};
         if (typeof this.data.chemType === 'undefined') this.data.chemType = 'none';
         if (typeof this.data.useChlorinator === 'undefined') this.data.useChlorinator = false;
+        if (typeof this.data.type === 'undefined') this.data.type = 'orp';
+
         super.initData();
         // Load up the 24 hours doseHistory.
         //this.doseHistory = DataLogger.readFromEnd(`chemDosage_${this.chemType}.log`, ChemicalDoseState, (lineNumber: number, entry: ChemicalDoseState): boolean => {
@@ -2751,6 +3044,7 @@ export class ChemicalDoseState extends DataLoggerEntry {
     public volumeDosed: number;
     public time: number;
     public timeDosed: number;
+    public type: string;
 
     public static createInstance(entry?: string): ChemicalDoseState { return new ChemicalDoseState(entry); }
     public save() { DataLogger.writeEnd(`chemDosage_${this.chem}.log`, this); }
@@ -2862,6 +3156,107 @@ export class ChemControllerStateWarnings extends ChildEqState {
     public set chlorinatorCommError(val: number) {
         if (this.chlorinatorCommError !== val) {
             this.data.chlorinatorCommError = sys.board.valueMaps.chemControllerWarnings.transform(val);
+            this.hasChanged = true;
+        }
+    }
+
+}
+export class ChemDoserStateWarnings extends ChildEqState {
+    ///ctor(data): ChemControllerStateWarnings { return new ChemControllerStateWarnings(data, name || 'warnings'); }
+    public dataName = 'chemDoserWarnings';
+    public initData() {
+        if (typeof this.data.lockout === 'undefined') this.lockout = 0;
+        if (typeof this.data.pHDailyLimitReached === 'undefined') this.dailyLimitReached = 0;
+        if (typeof this.data.invalidSetup === 'undefined') this.invalidSetup = 0;
+        if (typeof this.data.chlorinatorCommError === 'undefined') this.chlorinatorCommError = 0;
+    }
+    public get lockout(): number { return this.data.lockout; }
+    public set lockout(val: number) {
+        if (this.lockout !== val) {
+            this.data.lockout = sys.board.valueMaps.chemDoserLimits.transform(val);
+            this.hasChanged = true;
+        }
+    }
+    public get dailyLimitReached(): number { return this.data.dailyLimitReached; }
+    public set dailyLimitReached(val: number) {
+        if (this.dailyLimitReached !== val) {
+            this.data.dailyLimitReached = sys.board.valueMaps.chemDoserLimits.transform(val);
+            this.hasChanged = true;
+        }
+    }
+    public get invalidSetup(): number { return this.data.invalidSetup; }
+    public set invalidSetup(val: number) {
+        if (this.invalidSetup !== val) {
+            this.data.invalidSetup = sys.board.valueMaps.chemDoserLimits.transform(val);
+            this.hasChanged = true;
+        }
+    }
+    public get chlorinatorCommError(): number { return this.data.chlorinatorCommError; }
+    public set chlorinatorCommError(val: number) {
+        if (this.chlorinatorCommError !== val) {
+            this.data.chlorinatorCommError = sys.board.valueMaps.chemDoserWarnings.transform(val);
+            this.hasChanged = true;
+        }
+    }
+}
+
+export class ChemDoserStateAlarms extends ChildEqState {
+    public dataName = 'chemControllerAlarms';
+    public initData() {
+        if (typeof this.data.flow === 'undefined') this.data.flow = sys.board.valueMaps.chemDoserAlarms.transform(0);
+        if (typeof this.data.tank === 'undefined') this.data.tank = sys.board.valueMaps.chemDoserAlarms.transform(0);
+        if (typeof this.data.pumpFault === 'undefined') this.data.pumpFault = sys.board.valueMaps.chemDoserHardwareFaults.transform(0);
+        if (typeof this.data.bodyFault === 'undefined') this.data.bodyFault = sys.board.valueMaps.chemDoserHardwareFaults.transform(0);
+        if (typeof this.data.flowSensorFault === 'undefined') this.data.flowSensorFault = sys.board.valueMaps.chemDoserHardwareFaults.transform(0);
+        if (typeof this.data.comms === 'undefined') this.data.comms = sys.board.valueMaps.chemDoserStatus.transform(0);
+        if (typeof this.data.freezeProtect === 'undefined') this.data.freezeProtect = sys.board.valueMaps.chemDoserAlarms.transform(0);
+    }
+    public get flow(): number { return typeof this.data.flow === 'undefined' ? undefined : this.data.flow.val; }
+    public set flow(val: number) {
+        if (this.flow !== val) {
+            this.data.flow = sys.board.valueMaps.chemDoserAlarms.transform(val);
+            this.hasChanged = true;
+        }
+    }
+    public get tank(): number { return typeof this.data.pHTank === 'undefined' ? undefined : this.data.tank.val; }
+    public set tank(val: number) {
+        if (this.tank !== val) {
+            this.data.tank = sys.board.valueMaps.chemDoserAlarms.transform(val);
+            this.hasChanged = true;
+        }
+    }
+    public get pumpFault(): number { return typeof this.data.pumpFault === 'undefined' ? undefined : this.data.pumpFault.val; }
+    public set pumpFault(val: number) {
+        if (this.pumpFault !== val) {
+            this.data.pumpFault = sys.board.valueMaps.chemDoserHardwareFaults.transform(val);
+            this.hasChanged = true;
+        }
+    }
+    public get bodyFault(): number { return typeof this.data.bodyFault === 'undefined' ? undefined : this.data.bodyFault.val; }
+    public set bodyFault(val: number) {
+        if (this.bodyFault !== val) {
+            this.data.bodyFault = sys.board.valueMaps.chemDoserHardwareFaults.transform(val);
+            this.hasChanged = true;
+        }
+    }
+    public get flowSensorFault(): number { return typeof this.data.flowSensorFault === 'undefined' ? undefined : this.data.flowSensorFault.val; }
+    public set flowSensorFault(val: number) {
+        if (this.flowSensorFault !== val) {
+            this.data.flowSensorFault = sys.board.valueMaps.chemDoserHardwareFaults.transform(val);
+            this.hasChanged = true;
+        }
+    }
+    public get comms(): number { return typeof this.data.comms === 'undefined' ? undefined : this.data.comms.val; }
+    public set comms(val: number) {
+        if (this.comms !== val) {
+            this.data.comms = sys.board.valueMaps.chemDoserStatus.transform(val);
+            this.hasChanged = true;
+        }
+    }
+    public get freezeProtect(): number { return typeof this.data.freezeProtect === 'undefined' ? undefined : this.data.freezeProtect.val; }
+    public set freezeProtect(val: number) {
+        if (this.freezeProtect !== val) {
+            this.data.freezeProtect = sys.board.valueMaps.chemDoserAlarms.transform(val);
             this.hasChanged = true;
         }
     }

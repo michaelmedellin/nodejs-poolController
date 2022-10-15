@@ -466,7 +466,14 @@ export class EasyTouchBoard extends SystemBoard {
     public heaters: TouchHeaterCommands = new TouchHeaterCommands(this);
     public chemControllers: TouchChemControllerCommands = new TouchChemControllerCommands(this);
     protected _configQueue: TouchConfigQueue = new TouchConfigQueue();
-
+    public reloadConfig() {
+        //sys.resetSystem();
+        sys.configVersion.clear();
+        state.status = 0;
+        this.needsConfigChanges = true;
+        console.log('RESETTING THE CONFIGURATION');
+        this.modulesAcquired = false;
+    }
     public checkConfiguration() {
         if ((this.needsConfigChanges || (Date.now().valueOf() - new Date(sys.configVersion.lastUpdated).valueOf()) / 1000 / 60 > 20)) {
             //this._configQueue.clearTimer();
@@ -875,6 +882,41 @@ export class TouchScheduleCommands extends ScheduleCommands {
             conn.queueSendMessage(out);
         });
     }
+    public async updateSunriseSunsetAsync(): Promise<boolean> {
+        // *Touch doesn't have a notion of sunrise/sunset on the schedules;
+        // This will check the schedule and if the existing sunrise/sunset times 
+        // are not matching the desired time it will update the time on the OCP.
+        // https://github.com/tagyoureit/nodejs-poolController/discussions/560#discussioncomment-3362149
+        if (!state.heliotrope.isCalculated) { return Promise.resolve(false); }
+        const sunrise = state.heliotrope.sunrise.getHours() * 60 + state.heliotrope.sunrise.getMinutes();
+        const sunset = state.heliotrope.sunset.getHours() * 60 + state.heliotrope.sunset.getMinutes();
+
+        let anyUpdated = false;
+        for (let i = 0; i <= sys.schedules.length; i++) {
+            let sUpdated = false;
+            let sched = sys.schedules.getItemByIndex(i);
+            if (sched.startTimeType === sys.board.valueMaps.scheduleTimeTypes.getValue('sunrise') && sched.startTime !== sunrise) {
+                sched.startTime = sunrise;
+                anyUpdated = sUpdated = true;
+            }
+            else if (sched.startTimeType === sys.board.valueMaps.scheduleTimeTypes.getValue('sunset') && sched.startTime !== sunset) {
+                sched.startTime = sunset;
+                anyUpdated = sUpdated = true;
+            }
+            if (sched.endTimeType === sys.board.valueMaps.scheduleTimeTypes.getValue('sunrise') && sched.endTime !== sunrise) {
+                sched.endTime = sunrise;
+                anyUpdated = sUpdated = true;
+            }
+            else if (sched.endTimeType === sys.board.valueMaps.scheduleTimeTypes.getValue('sunset') && sched.endTime !== sunset) {
+                sched.endTime = sunset;
+                anyUpdated = sUpdated = true;
+            }
+            if (sUpdated) {
+                await sys.board.schedules.setScheduleAsync({id: sched.id});
+            }
+        }
+        return Promise.resolve(anyUpdated);
+    };
 }
 
 // todo: this can be implemented as a bytevaluemap
@@ -1160,7 +1202,7 @@ class TouchBodyCommands extends BodyCommands {
             // 1    | 97  | Spa setpoint
             // 2    | 7   | Pool/spa heat modes (01 = Heater spa 11 = Solar Only pool)
             // 3    | 0   | Cool set point for ultratemp
-            
+
 
             // Heat modes
             // 0 = Off
@@ -1403,7 +1445,7 @@ export class TouchCircuitCommands extends CircuitCommands {
                             let cstate = state.circuits.getInterfaceById(data.id);
                             circuit.nameId = cstate.nameId = nameByte;
                             circuit.name = cstate.name = sys.board.valueMaps.circuitNames.transform(nameByte).desc;
-                            circuit.showInFeatures = cstate.showInFeatures = typeof data.showInFeatures !== 'undefined' ? data.showInFeatures : circuit.showInFeatures || true;
+                            circuit.showInFeatures = cstate.showInFeatures = typeof data.showInFeatures !== 'undefined' ? utils.makeBool(data.showInFeatures) : circuit.showInFeatures;
                             circuit.freeze = typeof data.freeze !== 'undefined' ? utils.makeBool(data.freeze) : circuit.freeze;
                             circuit.type = cstate.type = typeByte;
                             circuit.eggTimer = typeof data.eggTimer !== 'undefined' ? parseInt(data.eggTimer, 10) : circuit.eggTimer || 720;
@@ -1829,6 +1871,13 @@ class TouchFeatureCommands extends FeatureCommands {
             conn.queueSendMessage(out);
         });
     }
+    public async deleteFeatureAsync(data: any): Promise<Feature> {
+        let circuit = sys.circuits.getItemById(data.id);
+        if (circuit.master === 1) return await super.deleteFeatureAsync(data);
+        data.nameId = 0;
+        data.functionId = sys.board.valueMaps.circuitFunctions.getValue('notused');
+        return this.setFeatureAsync(data);
+    }
 
 }
 class TouchChlorinatorCommands extends ChlorinatorCommands {
@@ -2190,7 +2239,42 @@ class TouchPumpCommands extends PumpCommands {
         // Need to do a check here if we are clearing out the circuits; id data.circuits === []
         // extend will keep the original array
         let bClearPumpCircuits = typeof data.circuits !== 'undefined' && data.circuits.length === 0;
-        if (!isAdd) data = extend(true, {}, pump.get(true), data, { id: id, type: ntype });
+        // RKS: 09-14-22 - This is fundamentally wrong.  This ensures that no circuit can be deleted
+        // from the pump.
+        if (!isAdd) {
+            data.address = typeof data.address !== 'undefined' ? data.address : pump.address;
+            data.backgroundCircuit = typeof data.backgroundCircuit !== 'undefined' ? data.backgroundCircuit : pump.backgroundCircuit;
+            data.backwashFlow = typeof data.backwashFlow !== 'undefined' ? data.backwashFlow : pump.backwashFlow;
+            data.backwashTime = typeof data.backwashTime !== 'undefined' ? data.backwashTime : pump.backwashTime;
+            data.body = typeof data.body !== 'undefined' ? data.body : pump.body;
+            data.filterSize = typeof data.filterSize !== 'undefined' ? data.filterSize : pump.filterSize;
+            data.flowStepSize = typeof data.flowStepSize !== 'undefined' ? data.flowStepSize : pump.flowStepSize
+            data.manualFilterGPM = typeof data.manualFilterGPM !== 'undefined' ? data.manualFilterGPM : pump.manualFilterGPM;
+            data.master = 0;
+            data.maxFlow = typeof data.maxFlow !== 'undefined' ? data.maxFlow : pump.maxFlow;
+            data.maxPressureIncrease = typeof data.maxPressureIncrease ? data.maxPressureIncrease : pump.maxPressureIncrease;
+            data.maxSpeed = typeof data.maxSpeed !== 'undefined' ? data.maxSpeed : pump.maxSpeed;
+            data.maxSystemTime = typeof data.maxSystemTime !== 'undefined' ? data.maxSystemTime : pump.maxSystemTime;
+            data.minFlow = typeof data.minFlow !== 'undefined' ? data.minFlow : pump.minFlow;
+            data.minSpeed = typeof data.minSpeed !== 'undefined' ? data.minSpeed : pump.minSpeed;
+            data.model = typeof data.model !== 'undefined' ? data.model : pump.model;
+            data.name = typeof data.name !== 'undefined' ? data.name : pump.name;
+            data.portId = typeof data.portId !== 'undefined' ? data.portId : pump.portId || 0;
+            data.primingSpeed = typeof data.primingSpeed !== 'undefined' ? data.primingSpeed : pump.primingSpeed;
+            data.primingTime = typeof data.primingTime !== 'undefined' ? data.primingTime : pump.primingTime;
+            data.rinseTime = typeof data.rinseTime !== 'undefined' ? data.rinseTime : pump.rinseTime;
+            data.speedStepSize = typeof data.speedStepSize !== 'undefined' ? data.speedStepSize : pump.speedStepSize;
+            data.turnovers = typeof data.turnovers !== 'undefined' ? data.turnovers : pump.turnovers;
+            data.vacuumFlow = typeof data.vacuumFlow !== 'undefined' ? data.vacuumFlow : pump.vacuumFlow;
+            data.vacuumTime = typeof data.vacuumTime !== 'undefined' ? data.vacuumTime : pump.vacuumTime;
+            if (typeof data.circuits !== 'undefined') {
+                let circs = extend(true, [], data.circuits);
+                data = extend(true, {}, pump.get(true), data, { id: id, type: ntype });
+                data.circuits = circs;
+            }
+            else
+                data = extend(true, {}, pump.get(true), data, { id: id, type: ntype });
+        }
         else data = extend(false, {}, data, { id: id, type: ntype });
         if (!isAdd && bClearPumpCircuits) data.circuits = [];
         data.name = data.name || pump.name || type.desc;
@@ -2279,6 +2363,7 @@ class TouchPumpCommands extends PumpCommands {
                 let arrCircuits = [];
                 // Below is a very strange mess that goofs up the circuit settings.
                 //{id:1, circuits:[{speed:1750, units:{val:0}, id:1, circuit:6}, {speed:2100, units:{val:0}, id:2, circuit:6}]}
+                let ubyte = 0;
                 for (let i = 1; i <= data.circuits.length && i <= type.maxCircuits; i++) {
                     // RKS: This notion of always returning the max number of circuits was misguided.  It leaves gaps in the circuit definitions and makes the pump
                     // layouts difficult when there are a variety of supported circuits.  For instance with SF pumps you only get 4.
@@ -2301,6 +2386,7 @@ class TouchPumpCommands extends PumpCommands {
                         outc.setPayloadByte((i * 2) + 4, Math.floor(speed / 256)); // Set to rpm
                         outc.setPayloadByte(i + 21, speed % 256);
                         c.speed = speed;
+                        ubyte |= (1 << (i - 1));
                     }
                     else if (typeof type.minFlow !== 'undefined' && c.units === sys.board.valueMaps.pumpUnits.getValue('gpm')) {
                         outc.setPayloadByte(i * 2 + 4, flow); // Set to gpm
@@ -2311,10 +2397,12 @@ class TouchPumpCommands extends PumpCommands {
                     if (arrCircuits.includes(c.circuit)) return Promise.reject(new InvalidEquipmentDataError(`Configuration for pump ${pump.name} is not correct circuit #${c.circuit} as included more than once. ${JSON.stringify(c)}`, 'Pump', data))
                     arrCircuits.push(c.circuit);
                 }
+                if (type.name === 'vsf') outc.setPayloadByte(4, ubyte);
             }
             else if (typeof type.maxCircuits !== 'undefined' && type.maxCircuits > 0 && typeof data.circuits === 'undefined') { // This pump type supports circuits and the payload did not contain them.
                 // Copy the data from the circuits array.  That way when we call pump.set to set the data back it will be persisted correctly.
                 data.circuits = extend(true, {}, pump.circuits.get());
+                let ubyte = 0;
                 for (let i = 1; i <= data.circuits.length; i++) data.circuits[i].id = i;
                 for (let i = 1; i <= pump.circuits.length && i <= type.maxCircuits; i++) {
                     let c = pump.circuits.getItemByIndex(i - 1);
@@ -2333,11 +2421,14 @@ class TouchPumpCommands extends PumpCommands {
                     if (typeof type.minSpeed !== 'undefined' && c.units === sys.board.valueMaps.pumpUnits.getValue('rpm')) {
                         outc.setPayloadByte((i * 2) + 4, Math.floor(speed / 256)); // Set to rpm
                         outc.setPayloadByte(i + 21, speed % 256);
+                        ubyte |= (1 << (i - 1));
                     }
                     else if (typeof type.minFlow !== 'undefined' && c.units === sys.board.valueMaps.pumpUnits.getValue('gpm')) {
                         outc.setPayloadByte((i * 2) + 4, flow); // Set to gpm
                     }
                 }
+                if (type.name === 'vsf') outc.setPayloadByte(4, ubyte);
+
             }
             return new Promise<Pump>((resolve, reject) => {
                 outc.onComplete = (err, msg) => {
@@ -2878,7 +2969,7 @@ class TouchChemControllerCommands extends ChemControllerCommands {
                         chem.name = schem.name = name;
                         chem.flowSensor.enabled = false;
                         sys.board.bodies.setBodyAsync(sys.bodies.getItemById(1, false))
-                          .then(()=>{resolve(chem)});
+                            .then(()=>{resolve(chem)});
                     }
                 }
             });
@@ -2905,45 +2996,45 @@ class TouchChemControllerCommands extends ChemControllerCommands {
         let chem = sys.board.chemControllers.findChemController(data);
         if (chem.master === 1) return super.deleteChemControllerAsync(data);
         return new Promise<ChemController>((resolve, reject) => {
-        let out = Outbound.create({
-            action: 211,
-            response: Response.create({ protocol: Protocol.IntelliChem, action: 1, payload: [211] }),
-            retries: 3,
-            payload: [],
-            onComplete: (err) => {
-                if (err) { reject(err); }
-                else {
-                    let schem = state.chemControllers.getItemById(id);
-                    chem.isActive = false;
-                    chem.ph.tank.capacity = chem.orp.tank.capacity = 6;
-                    chem.ph.tank.units = chem.orp.tank.units = '';
-                    schem.isActive = false;
-                    sys.board.bodies.setBodyAsync(sys.bodies.getItemById(1, false))
-                        .then(()=>{
-                            sys.chemControllers.removeItemById(id);
-                            state.chemControllers.removeItemById(id);
-                            resolve(chem);
-                        })
-                        .catch(()=>{reject(err);});
+            let out = Outbound.create({
+                action: 211,
+                response: Response.create({ protocol: Protocol.IntelliChem, action: 1, payload: [211] }),
+                retries: 3,
+                payload: [],
+                onComplete: (err) => {
+                    if (err) { reject(err); }
+                    else {
+                        let schem = state.chemControllers.getItemById(id);
+                        chem.isActive = false;
+                        chem.ph.tank.capacity = chem.orp.tank.capacity = 6;
+                        chem.ph.tank.units = chem.orp.tank.units = '';
+                        schem.isActive = false;
+                        sys.board.bodies.setBodyAsync(sys.bodies.getItemById(1, false))
+                            .then(()=>{
+                                sys.chemControllers.removeItemById(id);
+                                state.chemControllers.removeItemById(id);
+                                resolve(chem);
+                            })
+                            .catch(()=>{reject(err);});
+                    }
                 }
-            }
+            });
+            // I think this payload should delete the controller on Touch.
+            out.insertPayloadBytes(0, 0, 22);
+            out.setPayloadByte(0, chem.address - 144 || 0);
+            out.setPayloadByte(1, Math.floor((chem.ph.setpoint * 100) / 256) || 0);
+            out.setPayloadByte(2, Math.round((chem.ph.setpoint * 100) % 256) || 0);
+            out.setPayloadByte(3, Math.floor(chem.orp.setpoint / 256) || 0);
+            out.setPayloadByte(4, Math.round(chem.orp.setpoint % 256) || 0);
+            out.setPayloadByte(5, 0);
+            out.setPayloadByte(6, 0);
+            out.setPayloadByte(7, Math.floor(chem.calciumHardness / 256) || 0);
+            out.setPayloadByte(8, Math.round(chem.calciumHardness % 256) || 0);
+            out.setPayloadByte(9, chem.cyanuricAcid || 0);
+            out.setPayloadByte(11, Math.floor(chem.alkalinity / 256) || 0);
+            out.setPayloadByte(12, Math.round(chem.alkalinity % 256) || 0);
+            out.setPayloadByte(13, 20);
+            conn.queueSendMessage(out);
         });
-        // I think this payload should delete the controller on Touch.
-        out.insertPayloadBytes(0, 0, 22);
-        out.setPayloadByte(0, chem.address - 144 || 0);
-        out.setPayloadByte(1, Math.floor((chem.ph.setpoint * 100) / 256) || 0);
-        out.setPayloadByte(2, Math.round((chem.ph.setpoint * 100) % 256) || 0);
-        out.setPayloadByte(3, Math.floor(chem.orp.setpoint / 256) || 0);
-        out.setPayloadByte(4, Math.round(chem.orp.setpoint % 256) || 0);
-        out.setPayloadByte(5, 0);
-        out.setPayloadByte(6, 0);
-        out.setPayloadByte(7, Math.floor(chem.calciumHardness / 256) || 0);
-        out.setPayloadByte(8, Math.round(chem.calciumHardness % 256) || 0);
-        out.setPayloadByte(9, chem.cyanuricAcid || 0);
-        out.setPayloadByte(11, Math.floor(chem.alkalinity / 256) || 0);
-        out.setPayloadByte(12, Math.round(chem.alkalinity % 256) || 0);
-        out.setPayloadByte(13, 20);
-        conn.queueSendMessage(out);
-    });
     }
 }

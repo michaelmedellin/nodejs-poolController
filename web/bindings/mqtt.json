@@ -34,7 +34,9 @@
       ],
       "rootTopic-DIRECTIONS": "You can override the root topic by renaming _rootTopic to rootTopic",
       "_rootTopic": "@bind=(state.equipment.alias).replace(' ','-').replace('/','').toLowerCase();",
-      "clientId": "@bind='mqttjs_njsPC_'+Math.random().toString(16).substr(2, 8);"
+      "clientId": "@bind='mqttjs_njsPC_'+Math.random().toString(16).substr(2, 8);",
+      "willTopic": "state/status",
+      "willPayload": "{\"val\":3,\"name\":\"lost\",\"desc\":\"Connection Lost\",\"percent\":0}"
     }
   },
   "events": [
@@ -288,6 +290,11 @@
           "description": "Send set point."
         },
         {
+          "topic": "state/temps/bodies/@bind=data.id;/@bind=data.name;/heatSetpoint",
+          "message": "{\"heatSetpoint\":@bind=data.setPoint;}",
+          "description": "Send heat set point."
+        },
+        {
           "topic": "state/temps/bodies/@bind=data.id;/@bind=data.name;/coolSetpoint",
           "message": "{\"coolSetpoint\":@bind=data.coolSetpoint;}",
           "description": "Send cool set point."
@@ -305,7 +312,7 @@
       "topics": [
         {
           "topic": "state/chlorinators/@bind=data.id;/@bind=data.name;",
-          "message": "{\"id\":@bind=data.id;,\"isOn\":@bind=data.isOn?'\"on\"':'\"off\"';}",
+          "message": "{\"id\":@bind=data.id;,\"isOn\":@bind=data.currentOutput > 0 ?'\"on\"':'\"off\"';}",
           "description": "Bind 'on'/'off' as a message to the state topic."
         },
         {

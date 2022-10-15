@@ -91,7 +91,16 @@ export class EquipmentStateMessage {
         const model2 = msg.extractPayloadByte(28);
         // RKS: 06-15-20 -- While this works for now the way we are detecting seems a bit dubious.  First, the 2 status message
         // contains two model bytes.  Right now the ones witness in the wild include 23 = fw1.023, 40 = fw1.040, 47 = fw1.047.
-        if (model2 === 0 && (model1 === 23 || model1 >= 40)) {
+        // RKS: 07-21-22 -- Pentair is about to release fw1.232.  Unfortunately, the byte mapping for this has changed such that
+        // the bytes [27,28] are [0,2] respectively.  This looks like it might be in conflict with IntelliTouch but it is not.  Below
+        // are the combinations of 27,28 we have seen for IntelliTouch
+        // [1,0] = i5+3
+        // [0,1] = i7+3
+        // [1,3] = i5+3s
+        // [1,4] = i9+3s
+        // [1,5] = i10+3d
+        if ((model2 === 0 && (model1 === 23 || model1 >= 40)) ||
+            (model2 === 2 && model1 == 0)) {
             state.equipment.controllerType = 'intellicenter';
             sys.board.modulesAcquired = false;
             sys.controllerType = ControllerType.IntelliCenter;
@@ -172,7 +181,12 @@ export class EquipmentStateMessage {
 
                     // RSG - added 7/8/2020
                     // Every 30 mins, check the timezone and adjust DST settings
-                    if (dt.getMinutes() % 30 === 0) sys.board.system.setTZ();
+                    if (dt.getMinutes() % 30 === 0) {
+                        sys.board.system.setTZ();
+                        sys.board.schedules.updateSunriseSunsetAsync().then((updated: boolean)=>{
+                            if (updated) {logger.debug(`Sunrise/sunset times updated on schedules.`);}
+                        });
+                    }
                     // Check and update clock when it is off by >5 mins (just for a small buffer) and:
                     // 1. IntelliCenter has "manual" time set (Internet will automatically adjust) and autoAdjustDST is enabled
                     // 2. *Touch is "manual" (only option) and autoAdjustDST is enabled - (same as #1)
@@ -464,8 +478,19 @@ export class EquipmentStateMessage {
                                 sys.board.heaters.syncHeaterStates();
                                 break;
                             }
-                        case ControllerType.EasyTouch:
                         case ControllerType.SunTouch:
+                            EquipmentStateMessage.processSunTouchCircuits(msg);
+                            sys.board.circuits.syncCircuitRelayStates();
+                            sys.board.features.syncGroupStates();
+                            sys.board.circuits.syncVirtualCircuitStates();
+                            sys.board.valves.syncValveStates();
+                            sys.board.filters.syncFilterStates();
+                            state.emitControllerChange();
+                            state.emitEquipmentChanges();
+                            sys.board.heaters.syncHeaterStates();
+                            sys.board.schedules.syncScheduleStates();
+                            break;
+                        case ControllerType.EasyTouch:
                         case ControllerType.IntelliCom:
                         case ControllerType.IntelliTouch:
                             {
@@ -659,6 +684,39 @@ export class EquipmentStateMessage {
         }
         msg.isProcessed = true;
     }
+    private static processSunTouchCircuits(msg: Inbound) {
+        // SunTouch has really twisted bit mapping for its
+        // circuit states.  Features are intertwined within the
+        // features.
+        let byte = msg.extractPayloadByte(2);
+        for (let i = 0; i < 8; i++) {
+            let id = i === 4 ? 7 : i > 5 ? i + 2 : i + 1;
+            let circ = sys.circuits.getInterfaceById(id, false, { isActive: false });
+            if (circ.isActive) {
+                let isOn = ((1 << i) & byte) > 0;
+                let cstate = state.circuits.getInterfaceById(id, circ.isActive);
+                if (isOn !== cstate.isOn) {
+                    sys.board.circuits.setEndTime(circ, cstate, isOn);
+                    cstate.isOn = isOn;
+                }
+            }
+        }
+        byte = msg.extractPayloadByte(3);
+        {
+            let circ = sys.circuits.getInterfaceById(10, false, { isActive: false });
+            if (circ.isActive) {
+                let isOn = (byte & 1) > 0;
+                let cstate = state.circuits.getInterfaceById(circ.id, circ.isActive);
+                if (isOn !== cstate.isOn) {
+                    sys.board.circuits.setEndTime(circ, cstate, isOn);
+                    cstate.isOn = isOn;
+                }
+            }
+        }
+        state.emitEquipmentChanges();
+        msg.isProcessed = true;
+    }
+
     private static processTouchCircuits(msg: Inbound) {
         let circuitId = 1;
         let maxCircuitId = sys.board.equipmentIds.features.end;

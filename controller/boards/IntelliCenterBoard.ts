@@ -244,8 +244,9 @@ export class IntelliCenterBoard extends SystemBoard {
             [1, { name: 'heater', desc: 'Heater' }],
             [2, { name: 'solar', desc: 'Solar' }],
             [3, { name: 'cooling', desc: 'Cooling' }],
-            [6, { name: 'mtheat', desc: 'Heater' }],
             [4, { name: 'hpheat', desc: 'Heating' }],
+            [5, { name: 'hybheat', desc: 'Heating'}],
+            [6, { name: 'mtheat', desc: 'Heater' }],
             [8, { name: 'hpcool', desc: 'Cooling' }]
         ]);
         this.valueMaps.scheduleTypes = new byteValueMap([
@@ -1496,7 +1497,7 @@ class IntelliCenterCircuitCommands extends CircuitCommands {
                         circuit.eggTimer = eggTimer;
                         circuit.dontStop = data.dontStop;
                         circuit.freeze = (typeof data.freeze !== 'undefined' ? utils.makeBool(data.freeze) : circuit.freeze);
-                        circuit.showInFeatures = (typeof data.showInFeatures !== 'undefined' ? utils.makeBool(data.showInFeatures) : circuit.showInFeatures);
+                        scircuit.showInFeatures = circuit.showInFeatures = (typeof data.showInFeatures !== 'undefined' ? utils.makeBool(data.showInFeatures) : circuit.showInFeatures);
                         if (type === 9) scircuit.level = circuit.level = theme;
                         else {
                             let t = sys.board.valueMaps.circuitFunctions.transform(type);
@@ -1575,7 +1576,8 @@ class IntelliCenterCircuitCommands extends CircuitCommands {
                             group.dontStop = obj.dontStop;
                             sgroup.type = group.type = 2;
                             sgroup.isActive = group.isActive = true;
-                            if (typeof obj.showInFeatures !== 'undefined') sgroup.showInFeatures = group.showInFeatures = utils.makeBool(obj.showInFeatures);
+                            if (typeof obj.showInFeatures !== 'undefined') group.showInFeatures = utils.makeBool(obj.showInFeatures);
+                            sgroup.showInFeatures = group.showInFeatures;
                             if (typeof obj.circuits !== 'undefined') {
                                 for (let i = 0; i < obj.circuits.length; i++) {
                                     let c = group.circuits.getItemByIndex(i, true);
@@ -2669,7 +2671,6 @@ class IntelliCenterFeatureCommands extends FeatureCommands {
             out.appendPayloadString(typeof data.name !== 'undefined' ? data.name.toString() : feature.name, 16);
             conn.queueSendMessage(out);
         });
-
     }
 
 }
@@ -3309,7 +3310,7 @@ class IntelliCenterBodyCommands extends BodyCommands {
                     });
                 }
             }
-            if (typeof obj.showInDashBoard !== 'undefined') {
+            if (typeof obj.showInDashboard !== 'undefined') {
                 let sbody = state.temps.bodies.getItemById(id, false);
                 body.showInDashboard = sbody.showInDashboard = utils.makeBool(obj.showInDashboard);
             }
@@ -3835,6 +3836,10 @@ class IntelliCenterHeaterCommands extends HeaterCommands {
             // 4 = Solar Preferred
             // 5 = UltraTemp Only
             // 6 = UltraTemp Preferred????  This might be 22
+            // 7 = Hybrid Gas Only
+            // 8 = Hybrid Heatpump Only
+            // 9 = Hybrid - Hybrid Mode
+            // 10 = Hybrid - Dual Heat
             // 9 = Heat Pump
             // 25 = Heat Pump Preferred
             // ?? = Hybrid
@@ -3847,8 +3852,22 @@ class IntelliCenterHeaterCommands extends HeaterCommands {
             // 3 = Solar Heater
             // 4 = Solar Preferred
             // 5 = Heat Pump
-
             if (sys.heaters.length > 0) sys.board.valueMaps.heatSources = new byteValueMap([[1, { name: 'off', desc: 'Off' }]]);
+            sys.board.valueMaps.heatModes = new byteValueMap([[1, { name: 'off', desc: 'Off' }]]);
+            if (htypes.hybrid > 0) {
+                sys.board.valueMaps.heatModes.merge([
+                    [7, { name: 'hybheat', desc: 'Gas Only' }],
+                    [8, { name: 'hybheatpump', desc: 'Heat Pump Only' }],
+                    [9, { name: 'hybhybrid', desc: 'Hybrid' }],
+                    [10, { name: 'hybdual', desc: 'Dual Heat' }]
+                ]);
+                sys.board.valueMaps.heatSources.merge([
+                    [7, { name: 'hybheat', desc: 'Gas Only' }],
+                    [8, { name: 'hybheatpump', desc: 'Heat Pump Only' }],
+                    [9, { name: 'hybhybrid', desc: 'Hybrid' }],
+                    [10, { name: 'hybdual', desc: 'Dual Heat' }]
+                ]);
+            }
             if (gasHeaterInstalled) sys.board.valueMaps.heatSources.merge([[2, { name: 'heater', desc: 'Heater' }]]);
             if (mastertempInstalled) sys.board.valueMaps.heatSources.merge([[11, { name: 'mtheater', desc: 'MasterTemp' }]]);
             if (solarInstalled && (gasHeaterInstalled || heatPumpInstalled)) sys.board.valueMaps.heatSources.merge([[3, { name: 'solar', desc: 'Solar Only', hasCoolSetpoint: htypes.hasCoolSetpoint }], [4, { name: 'solarpref', desc: 'Solar Preferred', hasCoolSetpoint: htypes.hasCoolSetpoint }]]);
@@ -3859,7 +3878,6 @@ class IntelliCenterHeaterCommands extends HeaterCommands {
             else if (ultratempInstalled) sys.board.valueMaps.heatSources.merge([[5, { name: 'ultratemp', desc: 'UltraTemp', hasCoolSetpoint: htypes.hasCoolSetpoint }]]);
             sys.board.valueMaps.heatSources.merge([[0, { name: 'nochange', desc: 'No Change' }]]);
 
-            sys.board.valueMaps.heatModes = new byteValueMap([[1, { name: 'off', desc: 'Off' }]]);
             if (gasHeaterInstalled) sys.board.valueMaps.heatModes.merge([[2, { name: 'heater', desc: 'Heater' }]]);
             if (mastertempInstalled) sys.board.valueMaps.heatModes.merge([[11, { name: 'mtheater', desc: 'MasterTemp' }]]);
             if (solarInstalled && (gasHeaterInstalled || heatPumpInstalled || mastertempInstalled)) sys.board.valueMaps.heatModes.merge([[3, { name: 'solar', desc: 'Solar Only' }], [4, { name: 'solarpref', desc: 'Solar Preferred' }]]);

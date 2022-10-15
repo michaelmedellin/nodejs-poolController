@@ -59,11 +59,15 @@ export class MqttInterfaceBindings extends BaseInterfaceBindings {
                 rejectUnauthorized: !baseOpts.selfSignedCertificate,
                 url
             }
+            this.setWillOptions(opts);
             this.client = connect(url, opts);
             this.client.on('connect', async () => {
                 try {
                     logger.info(`MQTT connected to ${url}`);
                     await this.subscribe();
+                    // make sure status is up to date immediately
+                    // especially in the case of a re-connect
+                    this.bindEvent("controller", state.controllerState);
                 } catch (err) { logger.error(err); }
             });
             this.client.on('reconnect', () => {
@@ -74,6 +78,7 @@ export class MqttInterfaceBindings extends BaseInterfaceBindings {
             });
             this.client.on('error', (error) => {
                 logger.error(`MQTT error ${error}`)
+                this.clearWillState();
             });
         } catch (err) { logger.error(`Error initializing MQTT client ${this.cfg.name}: ${err}`); }
     }
@@ -141,6 +146,8 @@ export class MqttInterfaceBindings extends BaseInterfaceBindings {
                 `state/+/togglestate`,
                 `state/body/setPoint`,
                 `state/body/setpoint`,
+                `state/body/heatSetpoint`,
+                `state/body/coolSetpoint`,
                 `state/body/heatMode`,
                 `state/body/heatmode`,
                 `state/+/setTheme`,
@@ -209,6 +216,41 @@ export class MqttInterfaceBindings extends BaseInterfaceBindings {
             }
         }
         return toks;
+    }
+    private setWillOptions = (connectOpts) => {
+        const baseOpts = extend(true, { headers: {} }, this.cfg.options, this.context.options);
+
+        if (baseOpts.willTopic !== 'undefined') {
+          const rootTopic = this.rootTopic();
+          const topic = `${rootTopic}/${baseOpts.willTopic}`;
+          const publishOptions = {
+              retain: typeof baseOpts.retain !== 'undefined' ? baseOpts.retain : true,
+              qos: typeof baseOpts.qos !== 'undefined' ? baseOpts.qos : 2
+          };
+
+          connectOpts.will = {
+              topic: topic,
+              payload: baseOpts.willPayload,
+              retain: publishOptions.retain,
+              qos: publishOptions.qos
+          };
+        }
+    }
+    private clearWillState() {
+        if (typeof this.client.options.will === 'undefined')  return;
+        let willTopic = this.client.options.will.topic;
+        let willPayload = this.client.options.will.payload;
+
+        if (typeof this.events !== 'undefined') this.events.forEach(evt => {
+            if (typeof evt.topics !== 'undefined') evt.topics.forEach(t => {
+                if (typeof t.lastSent !== 'undefined') {
+                    let lm = t.lastSent.find(elem => elem.topic === willTopic);
+                    if (typeof lm !== 'undefined') {
+                        lm.message = willPayload.toString();
+                    }
+                }
+            });
+        });
     }
     public rootTopic = () => {
         let toks = {};
@@ -431,6 +473,41 @@ export class MqttInterfaceBindings extends BaseInterfaceBindings {
                             }
                             break;
                         }
+                    case 'heatsetpoint':
+                        try {
+                            let body = sys.bodies.findByObject(msg);
+                            if (topics[topics.length - 2].toLowerCase() === 'body') {
+                                if (typeof body === 'undefined') {
+                                    logger.error(new ServiceParameterError(`Cannot set body heatSetpoint.  You must supply a valid id, circuit, name, or type for the body`, 'body', 'id', msg.id));
+                                    return;
+                                }
+                                if (typeof msg.setPoint !== 'undefined' || typeof msg.heatSetpoint !== 'undefined') {
+                                    let setPoint = parseInt(msg.setPoint, 10) || parseInt(msg.heatSetpoint, 10);
+                                    if (!isNaN(setPoint)) {
+                                        await sys.board.bodies.setHeatSetpointAsync(body, setPoint);
+                                    }
+                                }
+                            }
+                        }
+                        catch (err) { logger.error(err); }
+                        break;
+                    case 'coolsetpoint':
+                        try {
+                            let body = sys.bodies.findByObject(msg);
+                            if (topics[topics.length - 2].toLowerCase() === 'body') {
+                                if (typeof body === 'undefined') {
+                                    logger.error(new ServiceParameterError(`Cannot set body coolSetpoint.  You must supply a valid id, circuit, name, or type for the body`, 'body', 'id', msg.id));
+                                    return;
+                                }
+                                if (typeof msg.setPoint !== 'undefined' || typeof msg.coolSetpoint !== 'undefined') {
+                                    let setPoint = parseInt(msg.coolSetpoint, 10) || parseInt(msg.coolSetpoint, 10);
+                                    if (!isNaN(setPoint)) {
+                                        await sys.board.bodies.setCoolSetpointAsync(body, setPoint);
+                                    }
+                                }
+                            }
+                        } catch (err) { logger.error(err); }
+                        break;
                     case 'setpoint':
                         try {
                             let body = sys.bodies.findByObject(msg);

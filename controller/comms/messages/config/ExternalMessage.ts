@@ -16,7 +16,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 import { Inbound } from "../Messages";
 import { sys, Body, ICircuitGroup, LightGroup, CircuitGroup } from "../../../Equipment";
-import { state, ICircuitGroupState, LightGroupState } from "../../../State";
+import { state, ICircuitGroupState, LightGroupState, CircuitGroupState } from "../../../State";
 import { Timestamp, utils } from "../../../Constants";
 import { logger } from "../../../../logger/Logger";
 export class ExternalMessage {
@@ -208,6 +208,7 @@ export class ExternalMessage {
                             sgroup = state.circuitGroups.getItemById(groupId, true);
                             sgroup.type = group.type = type;
                             if (typeof group.showInFeatures === 'undefined') group.showInFeatures = sgroup.showInFeatures = true;
+                            sgroup.showInFeatures = group.showInFeatures;
                             sys.lightGroups.removeItemById(groupId);
                             state.lightGroups.removeItemById(groupId);
                             sgroup.isActive = group.isActive = true;
@@ -274,6 +275,8 @@ export class ExternalMessage {
     private static processHeater(msg: Inbound) {
         // So a user is changing the heater info.  Lets
         // hijack it and get it ourselves.
+        // Installing hybrid heater.
+        //[165, 63, 15, 16, 168, 30][10, 0, 2, 5, 32, 5, 6, 3, 0, 6, 112, 72, 121, 98, 114, 105, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 1][4, 230]
         let isActive = msg.extractPayloadByte(3) !== 0;
         let heaterId = msg.extractPayloadByte(2) + 1;
         if (isActive) {
@@ -406,6 +409,7 @@ export class ExternalMessage {
             for (let j = 0; j < 8; j++) {
                 let group = sys.circuitGroups.getInterfaceById(groupId);
                 let gstate = group.type === 1 ? state.lightGroups.getItemById(groupId, group.isActive) : state.circuitGroups.getItemById(groupId, group.isActive);
+          
                 if (group.isActive !== false) {
                     let isOn = ((byte & (1 << (j))) >> j) > 0;
                     sys.board.circuits.setEndTime(group, gstate, isOn);
@@ -441,6 +445,9 @@ export class ExternalMessage {
                                 lg.action = 0;
                                 break;
                         }
+                    }
+                    else if(gstate.dataName === 'circuitGroup') {
+                        (gstate as CircuitGroupState).showInFeatures  = group.showInFeatures;
                     }
                 }
                 else {
@@ -867,5 +874,27 @@ export class ExternalMessage {
             sys.chlorinators.removeItemById(1);
             state.chlorinators.removeItemById(1);
         }
+    }
+    public static processTouchSetHeatMode(msg: Inbound) {
+        // We get here because some other controller is setting the heat
+        // mode.  The OCP will emit an 8 later but it can be very slow
+        // in doing this. ScreenLogic also captures this message so it
+        // doesn't get behind.
+        //[165, 1, 16, 34, 136, 4][86, 100, 3, 0][2, 33]
+        //payload: [temp1, temp2, mode2 << 2 | mode1, setPoint],
+        let bstate1 = state.temps.bodies.getItemById(1);
+        let bstate2 = state.temps.bodies.getItemById(2);
+        let body1 = sys.bodies.getItemById(1);
+        let body2 = sys.bodies.getItemById(2);
+        let mode1 = msg.extractPayloadByte(2) & 0x03;
+        let mode2 = (msg.extractPayloadByte(2) & 0x0C) >> 2;
+        bstate1.setPoint = body1.heatSetpoint = msg.extractPayloadByte(0);
+        bstate1.coolSetpoint = body1.coolSetpoint = msg.extractPayloadByte(3);
+        bstate2.setPoint = body2.heatSetpoint = msg.extractPayloadByte(1);
+        bstate1.heatMode = body1.heatMode = mode1;
+        bstate2.heatMode = body2.heatMode = mode2;
+        msg.isProcessed = true;
+        state.emitEquipmentChanges();
+
     }
 }
