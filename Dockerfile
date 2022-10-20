@@ -10,4 +10,4 @@ FROM gcr.io/distroless/nodejs:18
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=build-env /app ./
-CMD ["app.js"]
+CMD ["dist/app.js"]
