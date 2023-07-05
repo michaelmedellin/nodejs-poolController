@@ -1,5 +1,6 @@
 /*  nodejs-poolController.  An application to control pool equipment.
-Copyright (C) 2016, 2017, 2018, 2019, 2020.  Russell Goldin, tagyoureit.  russ.goldin@gmail.com
+Copyright (C) 2016, 2017, 2018, 2019, 2020, 2021, 2022.  
+Russell Goldin, tagyoureit.  russ.goldin@gmail.com
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as
@@ -15,20 +16,19 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 import * as extend from 'extend';
-import { EventEmitter, on } from 'events';
 import { ncp } from "../nixie/Nixie";
 import { NixieHeaterBase } from "../nixie/heaters/Heater";
-import { utils, Heliotrope, Timestamp } from '../Constants';
-import {SystemBoard, byteValueMap, ConfigQueue, ConfigRequest, BodyCommands, FilterCommands, PumpCommands, SystemCommands, CircuitCommands, FeatureCommands, ValveCommands, HeaterCommands, ChlorinatorCommands, ChemControllerCommands, EquipmentIdRange} from './SystemBoard';
+import { utils } from '../Constants';
+import {SystemBoard, byteValueMap, BodyCommands, FilterCommands, PumpCommands, SystemCommands, CircuitCommands, FeatureCommands, ValveCommands, HeaterCommands, ChlorinatorCommands, ChemControllerCommands, EquipmentIdRange} from './SystemBoard';
 import { logger } from '../../logger/Logger';
-import { state, ChlorinatorState, ChemControllerState, TemperatureState, VirtualCircuitState, CircuitState, ICircuitState, ICircuitGroupState, LightGroupState, ValveState, FilterState, BodyTempState, FeatureState } from '../State';
-import { sys, Equipment, Options, Owner, Location, CircuitCollection, TempSensorCollection, General, PoolSystem, Body, Pump, CircuitGroupCircuit, CircuitGroup, ChemController, Circuit, Feature, Valve, ICircuit, Heater, LightGroup, LightGroupCircuit, ControllerType, Filter } from '../Equipment';
-import { Protocol, Outbound, Message, Response } from '../comms/messages/Messages';
-import { BoardProcessError, EquipmentNotFoundError, InvalidEquipmentDataError, InvalidEquipmentIdError, InvalidOperationError, ParameterOutOfRangeError, ServiceParameterError } from '../Errors';
-import { conn } from '../comms/Comms';
+import { state, CircuitState, ICircuitState, ICircuitGroupState, LightGroupState, ValveState, FilterState, BodyTempState, FeatureState } from '../State';
+import { sys, Equipment, General, PoolSystem, CircuitGroupCircuit, CircuitGroup, ChemController, Circuit, Feature, Valve, ICircuit, Heater, LightGroup, LightGroupCircuit, ControllerType, Filter } from '../Equipment';
+import { BoardProcessError, EquipmentNotFoundError, InvalidEquipmentDataError, InvalidEquipmentIdError, ServiceParameterError } from '../Errors';
 import { delayMgr } from '../Lockouts';
 import { webApp } from "../../web/Server";
-import { off } from 'process';
+import { setTimeout } from 'timers/promises';
+import { setTimeout as setTimeoutSync } from 'timers';
+
 export class NixieBoard extends SystemBoard {
     constructor (system: PoolSystem){
         super(system);
@@ -266,9 +266,35 @@ export class NixieBoard extends SystemBoard {
             [4, { name: 'spaCommand', desc: 'Spa Command', maxButtons: 10 }]
         ]);
     }
+    public async closeAsync() {
+        logger.info(`Closing Nixie Board`);
+        await ncp.closeAsync();
+    }
     public async checkConfiguration() {
         state.status = sys.board.valueMaps.controllerStatus.transform(0, 0);
         state.emitControllerChange();
+        // Set all the schedule data based upon the config.
+        for (let i = 0; i < sys.schedules.length; i++) {
+            let sched = sys.schedules.getItemByIndex(i);
+            let ssched = state.schedules.getItemById(sched.id, true);
+            ssched.circuit = sched.circuit;
+            ssched.scheduleDays = sched.scheduleDays;
+            ssched.scheduleType = sched.scheduleType;
+            ssched.changeHeatSetpoint = sched.changeHeatSetpoint;
+            ssched.heatSetpoint = sched.heatSetpoint;
+            ssched.coolSetpoint = sched.coolSetpoint;
+            ssched.heatSource = sched.heatSource;
+            ssched.startTime = sched.startTime;
+            ssched.endTime = sched.endTime;
+            ssched.startTimeType = sched.startTimeType;
+            ssched.endTimeType = sched.endTimeType;
+            ssched.startDate = sched.startDate;
+            ssched.isActive = sched.isActive = true;
+            sched.disabled = sched.disabled;
+            ssched.display = sched.display;
+
+        }
+
         state.status = sys.board.valueMaps.controllerStatus.transform(1, 100);
         state.emitControllerChange();
     }
@@ -411,10 +437,12 @@ export class NixieBoard extends SystemBoard {
             sys.board.heaters.updateHeaterServices();
             state.cleanupState();
             logger.info(`${sys.equipment.model} control board initialized`);
-            state.status = sys.board.valueMaps.controllerStatus.transform(1, 100);
+            //state.status = sys.board.valueMaps.controllerStatus.transform(1, 100);
             state.mode = sys.board.valueMaps.panelModes.encode('auto');
             // At this point we should have the start of a board so lets check to see if we are ready or if we are stuck initializing.
-            setTimeout(() => self.processStatusAsync(), 5000);
+            await setTimeout(5000);
+            state.status = sys.board.valueMaps.controllerStatus.transform(1, 100);
+            await self.processStatusAsync();
         } catch (err) { state.status = 255; logger.error(`Error Initializing Nixie Control Panel ${err.message}`); }
     }
     public initValves() {
@@ -581,7 +609,7 @@ export class NixieSystemCommands extends SystemCommands {
         logger.info(`Timeout: ${timeout} Elapsed: ${elapsed}`);
         if (remaining > 0) {
             webApp.emitToClients('panelMode', { mode: mode, remaining: remaining, elapsed: elapsed, timeout: timeout });
-            this._modeTimer = setTimeout(() => { this.checkServiceTimeout(mode, start, timeout, interval || 1000); }, interval || 1000);
+            this._modeTimer = setTimeoutSync(() => { this.checkServiceTimeout(mode, start, timeout, interval || 1000); }, interval || 1000);
         }
         else {
             webApp.emitToClients('panelMode', { mode: sys.board.valueMaps.panelModes.transform(0), remaining: 0 });
@@ -1274,7 +1302,7 @@ export class NixieCircuitCommands extends CircuitCommands {
                 await sys.board.circuits.setLightThemeAsync(c.circuit, theme);
                 await sys.board.circuits.setCircuitStateAsync(c.circuit, false);
             }
-            await utils.sleep(5000);
+            await setTimeout(5000);
             // Turn the circuits all back on again.
             for (let i = 0; i < grp.circuits.length; i++) {
                 let c = grp.circuits.getItemByIndex(i);
@@ -1332,7 +1360,7 @@ export class NixieCircuitCommands extends CircuitCommands {
                         let c = grp.circuits.getItemByIndex(i);
                         await sys.board.circuits.setCircuitStateAsync(c.circuit, false);
                     }
-                    await utils.sleep(10000);
+                    await setTimeout(10000);
                     // Turn the circuits all back on again.
                     for (let i = 0; i < grp.circuits.length; i++) {
                         let c = grp.circuits.getItemByIndex(i);
@@ -1342,12 +1370,12 @@ export class NixieCircuitCommands extends CircuitCommands {
                 case 'colorset':
                     sgroup.action = nop;
                     sgroup.emitEquipmentChange();
-                    await utils.sleep(5000);
+                    await setTimeout(5000);
                     break;
                 case 'colorswim':
                     sgroup.action = nop;
                     sgroup.emitEquipmentChange();
-                    await utils.sleep(5000);
+                    await setTimeout(5000);
                     break;
             }
             return sgroup;

@@ -1,10 +1,11 @@
 ﻿{
   "controller": {
     "comms": {
+      "type": "local",
       "portId": 0,
       "enabled": true,
       "rs485Port": "/dev/ttyUSB0",
-      "mockPort": false,
+      "mock": false,
       "netConnect": false,
       "netHost": "raspberrypi",
       "netPort": 9801,
@@ -14,9 +15,19 @@
         "dataBits": 8,
         "parity": "none",
         "stopBits": 1,
-        "flowControl": false,
+        "rtscts": false,
         "autoOpen": false,
         "lock": false
+      },
+      "netSettings": {
+        "allowHalfOpen": false,
+        "keepAlive": false,
+        "keepAliveInitialDelay": 5
+      },
+      "screenlogic": {
+        "connectionType": "local",
+        "systemName": "Pentair: 00-00-00",
+        "password": 1234
       }
     },
     "backups": {
@@ -29,7 +40,6 @@
       "njsPC":  true,
       "servers": []
     }
-
   },
   "web": {
     "servers": {
@@ -248,10 +258,15 @@
     }
   },
   "log": {
-    "packet": {
+    "screenlogic": {
       "enabled": false,
       "logToConsole": false,
+      "logToFile": false
+    },
+    "packet": {
+      "logToConsole": false,
       "logToFile": false,
+      "enabled": false,
       "filename": "packetLog",
       "invalid": true,
       "broadcast": {

@@ -1,5 +1,6 @@
 /*  nodejs-poolController.  An application to control pool equipment.
-Copyright (C) 2016, 2017, 2018, 2019, 2020.  Russell Goldin, tagyoureit.  russ.goldin@gmail.com
+Copyright (C) 2016, 2017, 2018, 2019, 2020, 2021, 2022.  
+Russell Goldin, tagyoureit.  russ.goldin@gmail.com
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as
@@ -34,13 +35,14 @@ export class PumpMessage {
         }
     }
     public static processPumpConfig_IT(msg: Inbound) {
-        // packet 24/27/152/155 - Pump Config: IntelliTouch
+        // packet 24/27/152/155 - Pump Config: IntelliTouch.  These will always be addressable pumps ds & ss are not included.
         const pumpId = msg.extractPayloadByte(0);
         let type = msg.extractPayloadByte(1);  // Avoid setting this then setting it back if we are mapping to a different value.
         let isActive = type !== 0 && pumpId <= sys.equipment.maxPumps;
         // RKS: 04-14-21 - Only create the pump if it is available.  If the pump was previously defined as another type
         // then it will be removed and recreated.
-        let pump: Pump = sys.pumps.getItemById(pumpId, isActive);
+        // RKS: 05-06-23 - The original code did not search for the pump by its address.  This is not correct.
+        let pump: Pump = sys.pumps.getPumpByAddress(95 + pumpId, isActive);
         if(isActive) {
             // Remap the combination pump types.
             switch (type) {
@@ -58,8 +60,8 @@ export class PumpMessage {
                     break;
             }
             if (pump.type !== type) {
-                sys.pumps.removeItemById(pumpId);
-                pump = sys.pumps.getItemById(pumpId, isActive);
+                sys.pumps.removePumpByAddress(95 + pumpId);
+                if (isActive) pump = sys.pumps.getPumpByAddress(95 + pumpId, isActive);
             }
             pump.address = pumpId + 95;
             pump.master = 0;
@@ -307,7 +309,7 @@ export class PumpMessage {
         // Sample Packet
         // [255, 0, 255], [165, 33, 15, 16, 27, 46], [1, 128, 1, 2, 0, 1, 6, 2, 12, 4, 9, 11, 7, 6, 7, 128, 8, 132, 3, 15, 5, 3, 234, 128, 46, 108, 58, 2, 232, 220, 232, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], [8, 5]
         const pumpId = msg.extractPayloadByte(0);
-        const pump = sys.pumps.getItemById(pumpId);
+        const pump = sys.pumps.getPumpByAddress(95 + pumpId);
         // [1, 128, 0, 2, 0, 6, 5, 1, 5, 158, 9, 2, 10, 0, 3, 0, 3, 0, 3, 0, 3, 3, 120, 20, 146, 240, 232, 232, 232, 232, 232]
         // byte | val |
         // 0    | 1   | PumpId = 1
@@ -331,7 +333,7 @@ export class PumpMessage {
         // 18   | 3   | Big endian speed for the speed (1000 rpm with byte(28))
         // 19   | 0   | Circuit speed #8 = No circuit
         // 20   | 3   | Big endian speed for the speed (1000 rpm with byte(29))
-        // 21   | 3   | Big eniand speed for the priming speed (1000 rpm with byte(30))
+        // 21   | 3   | Big endian speed for the priming speed (1000 rpm with byte(30))
         // All 30 bytes on this message are accounted for except for byte 3 & 4.
         if (typeof pump.model === 'undefined') pump.model = 0;
         for (let circuitId = 1; circuitId <= sys.board.valueMaps.pumpTypes.get(pump.type).maxCircuits; circuitId++) {
@@ -358,7 +360,7 @@ export class PumpMessage {
         // Sample Packet
         // [255, 0, 255], [165, 33, 15, 16, 27, 46], [2, 6, 15, 2, 0, 1, 29, 11, 35, 0, 30, 0, 30, 0, 30, 0, 30, 0, 30, 0, 30, 30, 55, 5, 10, 60, 5, 1, 50, 0, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], [3, 41]
         const pumpId = msg.extractPayloadByte(0);
-        const pump = sys.pumps.getItemById(pumpId);
+        const pump = sys.pumps.getPumpByAddress(95 + pumpId);
         if (typeof pump.model === 'undefined') pump.model = 0;
         for (let circuitId = 1; circuitId <= sys.board.valueMaps.pumpTypes.get(pump.type).maxCircuits; circuitId++) {
             let _circuit = msg.extractPayloadByte(circuitId * 2 + 3);
@@ -394,7 +396,7 @@ export class PumpMessage {
         //[255, 0, 255][165, 33, 15, 16, 27, 46][2, 64, 0, 0, 2, 1, 33, 2, 4, 0, 30, 0, 30, 0, 30, 0, 30, 0, 30, 0, 30, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], [2, 94]
         //[255, 0, 255][165,  1, 15, 16, 24, 31][1, 64, 0, 0, 0, 6, 5, 2, 8, 1, 11, 7, 13, 0, 0, 0, 0, 0, 0, 0, 0, 0, 220, 152, 184, 122, 0, 0, 0, 0, 0][4, 24]
         const pumpId = msg.extractPayloadByte(0);
-        const pump = sys.pumps.getItemById(pumpId);
+        const pump = sys.pumps.getPumpByAddress(95 + pumpId);
         if (typeof pump.model === 'undefined') pump.model = 0;
         for (let circuitId = 1; circuitId <= sys.board.valueMaps.pumpTypes.get(pump.type).maxCircuits; circuitId++) {
             let _circuit = msg.extractPayloadByte(circuitId * 2 + 3);

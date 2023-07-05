@@ -1,5 +1,6 @@
 /*  nodejs-poolController.  An application to control pool equipment.
-Copyright (C) 2016, 2017, 2018, 2019, 2020.  Russell Goldin, tagyoureit.  russ.goldin@gmail.com
+Copyright (C) 2016, 2017, 2018, 2019, 2020, 2021, 2022.  
+Russell Goldin, tagyoureit.  russ.goldin@gmail.com
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as
@@ -50,18 +51,18 @@ export class IntelliTouchBoard extends EasyTouchBoard {
         // 156 = poolheater
         // 157 = spaheater
         this.valueMaps.virtualCircuits = new byteValueMap([
-            [154, { name: 'solar', desc: 'Solar', assignableToPumpCircuit: true }],
+            [154, { name: 'freeze', desc: 'Freeze', assignableToPumpCircuit: true }],
             [155, { name: 'spaHeater', desc: 'Spa Heater', assignableToPumpCircuit: true }],
             [156, { name: 'poolHeater', desc: 'Pool Heater', assignableToPumpCircuit: true }],
             [157, { name: 'heater', desc: 'Either Heater', assignableToPumpCircuit: true }],
-            [158, { name: 'freeze', desc: 'Freeze', assignableToPumpCircuit: true }],
+            [158, { name: 'solar', desc: 'Solar', assignableToPumpCircuit: true }],
             [159, { name: 'heatBoost', desc: 'Heat Boost', assignableToPumpCircuit: false }],
             [160, { name: 'heatEnable', desc: 'Heat Enable', assignableToPumpCircuit: false }],
             [161, { name: 'pumpSpeedUp', desc: 'Pump Speed +', assignableToPumpCircuit: false }],
             [162, { name: 'pumpSpeedDown', desc: 'Pump Speed -', assignableToPumpCircuit: false }],
-            [255, { name: 'notused', desc: 'NOT USED', assignableToPumpCircuit: true }]
+            [255, { name: 'notused', desc: 'NOT USED', assignableToPumpCircuit: true }],
+            [258, { name: 'anyHeater', desc: 'Any Heater' }]
         ]);
-
     }
     public initVirtualCircuits() {
         for (let i = state.virtualCircuits.length - 1; i >= 0; i--) {
@@ -71,6 +72,49 @@ export class IntelliTouchBoard extends EasyTouchBoard {
         }
         // Now that we removed all the virtual circuits that should not be there we need
         // to update them based upon the data.
+    }
+    public initValves(eq) {
+        if (typeof sys.valves.find((v) => v.id === 1) === 'undefined') {
+            let valve = sys.valves.getItemById(1, true);
+            valve.isIntake = false;
+            valve.isReturn = false;
+            valve.type = 0;
+            valve.master = 0;
+            valve.isActive = true;
+            valve.name = 'Valve A';
+            logger.info(`Initializing IntelliTouch Valve A`);
+
+        }
+        if (typeof sys.valves.find((v) => v.id === 2) === 'undefined') {
+            let valve = sys.valves.getItemById(2, true);
+            valve.isIntake = false;
+            valve.isReturn = false;
+            valve.type = 0;
+            valve.master = 0;
+            valve.isActive = true;
+            valve.name = 'Valve B';
+            logger.info(`Initializing IntelliTouch Valve B`);
+        }
+        if (eq.intakeReturnValves) {
+            logger.info(`Initializing IntelliTouch Intake/Return Valves`);
+            let valve = sys.valves.getItemById(3, true);
+            valve.isIntake = true;
+            valve.isReturn = false;
+            valve.circuit = 6;
+            valve.type = 0;
+            valve.master = 0;
+            valve.isActive = true;
+            valve.name = 'Intake';
+
+            valve = sys.valves.getItemById(4, true);
+            valve.isIntake = false;
+            valve.isReturn = true;
+            valve.circuit = 6;
+            valve.type = 0;
+            valve.master = 0;
+            valve.isActive = true;
+            valve.name = 'Return';
+        }
     }
     public initExpansionModules(byte1: number, byte2: number) {
         console.log(`Pentair IntelliTouch System Detected!`);
@@ -197,6 +241,7 @@ export class IntelliTouchBoard extends EasyTouchBoard {
         }
         eq.setEquipmentIds();
         this.initVirtualCircuits();
+        this.initValves(eq);
         state.equipment.maxBodies = sys.equipment.maxBodies;
         state.equipment.maxCircuitGroups = sys.equipment.maxCircuitGroups;
         state.equipment.maxCircuits = sys.equipment.maxCircuits;
@@ -209,6 +254,7 @@ export class IntelliTouchBoard extends EasyTouchBoard {
         state.equipment.single = sys.equipment.single;
         state.equipment.shared = sys.equipment.shared;
         state.equipment.dual = sys.equipment.dual;
+        
         state.emitControllerChange();
 
     }
@@ -296,31 +342,25 @@ export class IntelliTouchBoard extends EasyTouchBoard {
 class ITTouchConfigQueue extends TouchConfigQueue {
     public queueChanges() {
         this.reset();
-        if (conn.mockPort) {
-            logger.info(`Skipping configuration request from OCP because MockPort enabled.`);
-        } else {
-            logger.info(`Requesting ${sys.controllerType} configuration`);
-            this.queueItems(GetTouchConfigCategories.dateTime, [0]);
-            this.queueItems(GetTouchConfigCategories.heatTemperature, [0]);
-            this.queueItems(GetTouchConfigCategories.solarHeatPump, [0]);
-            this.queueRange(GetTouchConfigCategories.customNames, 0, sys.equipment.maxCustomNames - 1);
-            this.queueRange(GetTouchConfigCategories.circuits, 1, sys.equipment.maxCircuits); // circuits
-            this.queueRange(GetTouchConfigCategories.circuits, 41, 41 + sys.equipment.maxFeatures); // features
-            this.queueRange(GetTouchConfigCategories.schedules, 1, sys.equipment.maxSchedules);
-            this.queueItems(GetTouchConfigCategories.delays, [0]);
-            this.queueItems(GetTouchConfigCategories.settings, [0]);
-            this.queueItems(GetTouchConfigCategories.intellifloSpaSideRemotes, [0]);
-            this.queueItems(GetTouchConfigCategories.is4is10, [0]);
-            this.queueItems(GetTouchConfigCategories.spaSideRemote, [0]);
-            this.queueItems(GetTouchConfigCategories.valves, [0]);
-            this.queueItems(GetTouchConfigCategories.lightGroupPositions);
-            this.queueItems(GetTouchConfigCategories.highSpeedCircuits, [0]);
-            this.queueRange(GetTouchConfigCategories.pumpConfig, 1, sys.equipment.maxPumps);
-            this.queueRange(GetTouchConfigCategories.circuitGroups, 0, sys.equipment.maxFeatures - 1);
-            // items not required by ScreenLogic
-            if (sys.chlorinators.getItemById(1).isActive)
-                this.queueItems(GetTouchConfigCategories.intellichlor, [0]);
-        }
+        logger.info(`Requesting ${sys.controllerType} configuration`);
+        this.queueItems(GetTouchConfigCategories.dateTime, [0]);
+        this.queueItems(GetTouchConfigCategories.heatTemperature, [0]);
+        this.queueItems(GetTouchConfigCategories.solarHeatPump, [0]);
+        this.queueRange(GetTouchConfigCategories.customNames, 0, sys.equipment.maxCustomNames - 1);
+        this.queueRange(GetTouchConfigCategories.circuits, 1, sys.equipment.maxCircuits); // circuits
+        this.queueRange(GetTouchConfigCategories.circuits, 41, 41 + sys.equipment.maxFeatures); // features
+        this.queueRange(GetTouchConfigCategories.schedules, 1, sys.equipment.maxSchedules);
+        this.queueItems(GetTouchConfigCategories.delays, [0]);
+        this.queueItems(GetTouchConfigCategories.settings, [0]);
+        this.queueItems(GetTouchConfigCategories.intellifloSpaSideRemotes, [0]);
+        this.queueItems(GetTouchConfigCategories.is4is10, [0]);
+        this.queueItems(GetTouchConfigCategories.quickTouchRemote, [0]);
+        this.queueItems(GetTouchConfigCategories.valves, [0]);
+        this.queueItems(GetTouchConfigCategories.lightGroupPositions);
+        this.queueItems(GetTouchConfigCategories.highSpeedCircuits, [0]);
+        this.queueRange(GetTouchConfigCategories.pumpConfig, 1, sys.equipment.maxPumps);
+        this.queueRange(GetTouchConfigCategories.circuitGroups, 0, sys.equipment.maxFeatures - 1);
+        this.queueItems(GetTouchConfigCategories.intellichlor, [0]);
         if (this.remainingItems > 0) {
             var self = this;
             setTimeout(() => { self.processNext(); }, 50);

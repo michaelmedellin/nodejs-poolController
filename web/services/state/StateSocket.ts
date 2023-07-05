@@ -1,5 +1,6 @@
 /*  nodejs-poolController.  An application to control pool equipment.
-Copyright (C) 2016, 2017, 2018, 2019, 2020.  Russell Goldin, tagyoureit.  russ.goldin@gmail.com
+Copyright (C) 2016, 2017, 2018, 2019, 2020, 2021, 2022.  
+Russell Goldin, tagyoureit.  russ.goldin@gmail.com
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as
@@ -71,7 +72,7 @@ export class StateSocket {
         sock.on('/temps', async (data: any) => {
             try {
                 data = JSON.parse(data);
-                await sys.board.system.setTempsAsync(data).catch(err => logger.error(err));
+                await sys.board.system.setTempsAsync(data).catch(err => logger.error(`setTempsAsync: ${err.message}`));
             }
             catch (err) { logger.error(`Socket processing error /temps: ${err.message}`); }
         });
@@ -196,7 +197,7 @@ export class StateSocket {
                     await sys.board.circuits.setCircuitStateAsync(id, utils.makeBool(data.isOn || typeof data.state));
                 }
             }
-            catch (err) { logger.error(err); }
+            catch (err) { logger.error(`Socket /circuit error: ${err.message}`); }
         });
         sock.on('/feature', async (data: any) => {
             try {

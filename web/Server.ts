@@ -1,5 +1,6 @@
 /*  nodejs-poolController.  An application to control pool equipment.
-Copyright (C) 2016, 2017, 2018, 2019, 2020.  Russell Goldin, tagyoureit.  russ.goldin@gmail.com
+Copyright (C) 2016, 2017, 2018, 2019, 2020, 2021, 2022.  
+Russell Goldin, tagyoureit.  russ.goldin@gmail.com
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as
@@ -45,7 +46,8 @@ import { StateSocket } from "./services/state/StateSocket";
 import { UtilitiesRoute } from "./services/utilities/Utilities";
 import express = require('express');
 import extend = require("extend");
-
+import { setTimeout as setTimeoutSync } from 'timers';
+import { setTimeout } from 'timers/promises';
 
 // This class serves data and pages for
 // external interfaces as well as an internal dashboard.
@@ -172,6 +174,7 @@ export class WebServer {
         // RKS: We need to get the scope-local nic. This has nothing to do with IP4/6 and is not necessarily named en0 or specific to a particular nic.  We are
         // looking for the first IPv4 interface that has a mac address which will be the scope-local address.  However, in the future we can simply use the IPv6 interface
         // if that is returned on the local scope but I don't know if the node ssdp server supports it on all platforms.
+        let fallback; // Use this for WSL adapters.
         for (let name in networkInterfaces) {
             let nic = networkInterfaces[name];
             for (let ndx in nic) {
@@ -179,10 +182,39 @@ export class WebServer {
                 // All scope-local addresses will have a mac.  In a multi-nic scenario we are simply grabbing
                 // the first one we come across.
                 if (!addr.internal && addr.mac.indexOf('00:00:00:') < 0 && addr.family === this.family) {
-                    return addr;
+                    if (!addr.mac.startsWith('00:'))
+                        return addr;
+                    else if (typeof fallback === 'undefined') fallback = addr;
                 }
             }
         }
+        return fallback;
+    }
+    public getNetworkInterfaces() {
+        const networkInterfaces = os.networkInterfaces();
+        // RKS: We need to get the scope-local nics. This has nothing to do with IP4/6 and is not necessarily named en0 or specific to a particular nic.  We are
+        // looking for the first IPv4 interface that has a mac address which will be the scope-local address.  However, in the future we can simply use the IPv6 interface
+        // if that is returned on the local scope but I don't know if the node ssdp server supports it on all platforms.
+        let ips = [];
+        let nics = { physical: [], virtual: [] }
+        for (let name in networkInterfaces) {
+            let nic = networkInterfaces[name];
+            for (let ndx in nic) {
+                let addr = nic[ndx];
+                // All scope-local addresses will have a mac.  In a multi-nic scenario we are simply grabbing
+                // the first one we come across.
+                if (!addr.internal && addr.mac.indexOf('00:00:00:') < 0 && addr.family === this.family) {
+                    if (typeof ips.find((x) => x === addr.address) === 'undefined') {
+                        ips.push(addr.address);
+                        if (!addr.mac.startsWith('00:'))
+                            nics.physical.push(extend(true, { name: name }, addr));
+                        else
+                            nics.virtual.push(extend(true, { name: name }, addr));
+                    }
+                }
+            }
+        }
+        return nics;
     }
     public ip() { return typeof this.getInterface() === 'undefined' ? '0.0.0.0' : this.getInterface().address; }
     public mac() { return typeof this.getInterface() === 'undefined' ? '00:00:00:00' : this.getInterface().mac; }
@@ -229,7 +261,7 @@ export class WebServer {
             else
                 logger.info(`Auto-backup initialized Last Backup: ${Timestamp.toISOLocal(new Date(this.lastBackup))}`);
             // Lets wait a good 20 seconds before we auto-backup anything.  Now that we are initialized let the OCP have its way with everything.
-            setTimeout(() => { this.checkAutoBackup(); }, 20000);
+            setTimeoutSync(()=>{this.checkAutoBackup();}, 20000);
         }
         catch (err) { logger.error(`Error initializing auto-backup: ${err.message}`); }
     }
@@ -380,7 +412,7 @@ export class WebServer {
         if (this.autoBackup) {
             await this.pruneAutoBackups(bu.keepCount);
             let nextBackup = this.lastBackup + (bu.interval.days * 86400000) + (bu.interval.hours * 3600000);
-            setTimeout(async () => {
+            setTimeoutSync(async () => {
                 try {
                     await this.checkAutoBackup();
                 } catch (err) { logger.error(`Error checking auto-backup: ${err.message}`); }
@@ -488,7 +520,7 @@ export class WebServer {
                             }
                         }
                         stats.servers.push(ctx);
-                        if (!srv.isConnected) await utils.sleep(6000); // rem server waits to connect 5s before isConnected will be true. Server.ts#1256 = REMInterfaceServer.init();  What's a better way to do this?
+                        if (!srv.isConnected) await setTimeout(6000); // rem server waits to connect 5s before isConnected will be true. Server.ts#1256 = REMInterfaceServer.init();  What's a better way to do this?
                         if (typeof cfg === 'undefined' || typeof cfg.controllerConfig === 'undefined') ctx.server.errors.push(`Server configuration not found in zip file`);
                         else if (typeof srv === 'undefined') ctx.server.errors.push(`Server ${s.name} is not enabled in njsPC cannot restore.`);
                         else if (!srv.isConnected) ctx.server.errors.push(`Server ${s.name} is not connected cannot restore.`);
@@ -613,7 +645,7 @@ export class HttpServer extends ProtoServer {
     private socketHandler(sock: Socket) {
         let self = this;
         // this._sockets.push(sock);
-        setTimeout(async () => {
+        setTimeoutSync(async () => {
             // refresh socket list with every new socket
             self._sockets = await self.sockServer.fetchSockets();
         }, 100)
@@ -654,10 +686,15 @@ export class HttpServer extends ProtoServer {
             if (!sendMessages) sock.leave('msgLogger');
             else sock.join('msgLogger');
         });
-        sock.on('sendRS485PortStats', function (sendPortStatus: boolean) {
-            console.log(`sendRS485PortStats set to ${sendPortStatus}`);
-            if (!sendPortStatus) sock.leave('rs485PortStats');
+        sock.on('sendRS485PortStats', function (sendPortStats: boolean) {
+            console.log(`sendRS485PortStats set to ${sendPortStats}`);
+            if (!sendPortStats) sock.leave('rs485PortStats');
             else sock.join('rs485PortStats');
+        });
+        sock.on('sendScreenlogicStats', function (sendScreenlogicStats: boolean) {
+            console.log(`sendScreenlogicStats set to ${sendScreenlogicStats}`);
+            if (!sendScreenlogicStats) sock.leave('screenlogicStats');
+            else sock.join('screenlogicStats');
         });
         StateSocket.initSockets(sock);
         ConfigSocket.initSockets(sock);
@@ -745,7 +782,7 @@ export class HttpServer extends ProtoServer {
 
                 // start our server on port
                 this.server.listen(cfg.port, cfg.ip, function () {
-                    logger.info('Server is now listening on %s:%s', cfg.ip, cfg.port);
+                    logger.info('Server is now listening on %s:%s - %s:%s', cfg.ip, cfg.port, webApp.ip(), webApp.httpPort());
                 });
                 this.isRunning = true;
             }
@@ -847,7 +884,7 @@ export class HttpsServer extends HttpServer {
 }
 export class SsdpServer extends ProtoServer {
     // Simple service discovery protocol
-    public server: any; //node-ssdp;
+    public server: ssdp.Server; //node-ssdp;
     public deviceUUID: string;
     public upnpPath: string;
     public modelName: string;
@@ -865,16 +902,37 @@ export class SsdpServer extends ProtoServer {
             this.modelName = `njsPC v${ver}`;
             this.modelNumber = `njsPC${ver.replace(/\./g, '-')}`;
             // todo: should probably check if http/https is enabled at this point
-            let port = config.getSection('web').servers.http.port || 7777;
-            this.upnpPath = 'http://' + webApp.ip() + ':' + port + '/upnp.xml';
+            //let port = config.getSection('web').servers.http.port || 7777;
+            this.upnpPath = 'http://' + webApp.ip() + ':' + webApp.httpPort() + '/upnp.xml';
+            let nics = webApp.getNetworkInterfaces();
             let SSDP = ssdp.Server;
-            this.server = new SSDP({
-                //customLogger: (...args) => console.log.apply(null, args),
-                logLevel: 'INFO',
-                udn: this.deviceUUID,
-                location: this.upnpPath,
-                sourcePort: 1900
-            });
+            if (nics.physical.length + nics.virtual.length > 1) {
+                // If there are multiple nics (docker...etc) then
+                // this will bind on all of them.
+                this.server = new SSDP({
+                    //customLogger: (...args) => console.log.apply(null, args),
+                    logLevel: 'INFO',
+                    udn: this.deviceUUID,
+                    location: {
+                        protocol: 'http://',
+                        port: webApp.httpPort(),
+                        path: '/upnp.xml'
+                    },
+                    explicitSocketBind: true,
+                    sourcePort: 1900
+                });
+            }
+            else {
+                this.server = new SSDP({
+                    //customLogger: (...args) => console.log.apply(null, args),
+                    logLevel: 'INFO',
+                    udn: this.deviceUUID,
+                    location: this.upnpPath,
+                    sourcePort: 1900
+                });
+
+
+            }
             this.server.addUSN('upnp:rootdevice'); // This line will make the server show up in windows.
             this.server.addUSN(this.deviceType);
             // start the server
@@ -891,6 +949,8 @@ export class SsdpServer extends ProtoServer {
     }
     public deviceXML(): string {
         let ver = sys.appVersion.split('.');
+        let friendlyName = 'njsPC: unknown model';
+        if (typeof sys !== 'undefined' && typeof sys.equipment !== 'undefined' && typeof sys.equipment.model !== 'undefined') friendlyName = `${sys.equipment.model}`
         let XML = `<?xml version="1.0"?>
         <root xmlns="urn:schemas-upnp-org:device-1-0">
             <specVersion>
@@ -899,7 +959,7 @@ export class SsdpServer extends ProtoServer {
             </specVersion>
             <device>
                 <deviceType>${this.deviceType}</deviceType>
-                <friendlyName>NodeJS Pool Controller</friendlyName> 
+                <friendlyName>${friendlyName}</friendlyName>
                 <manufacturer>tagyoureit</manufacturer>
                 <manufacturerURL>https://github.com/tagyoureit/nodejs-poolController</manufacturerURL>
                 <presentationURL>http://${webApp.ip()}:${webApp.httpPort()}/state/all</presentationURL>
@@ -969,22 +1029,29 @@ export class MdnsServer extends ProtoServer {
                     if (question.name === '_poolcontroller._tcp.local') {
                         logger.info(`received mdns query for nodejs_poolController`);
                         self.server.respond({
-                            answers: [{
-                                name: '_poolcontroller._tcp.local',
-                                type: 'A',
-                                ttl: 300,
-                                data: webApp.ip()
-                            },
-                            {
-                                name: 'api._poolcontroller._tcp.local',
-                                type: 'SRV',
-                                data: {
-                                    port: '4200',
-                                    target: '_poolcontroller._tcp.local',
-                                    weight: 0,
-                                    priority: 10
-                                }
-                            }]
+                            answers: [
+                                {
+                                    name: '_poolcontroller._tcp.local',
+                                    type: 'A',
+                                    ttl: 300,
+                                    data: webApp.ip()
+                                },
+                                {
+                                    name: '_poolcontroller._tcp.local',
+                                    type: 'SRV',
+                                    data: {
+                                        port: webApp.httpPort().toString(),
+                                        target: '_poolcontroller._tcp.local',
+                                        weight: 0,
+                                        priority: 10
+                                    }
+                                },
+                                {
+                                    name: 'model',
+                                    type: 'TXT',
+                                    data: 'njsPC'
+                                },
+                            ]
                         });
                     }
                 });
@@ -1338,7 +1405,7 @@ export class REMInterfaceServer extends ProtoServer {
         this.uuid = cfg.uuid;
         if (cfg.enabled) {
             this.initSockets();
-            setTimeout(async () => {
+            setTimeoutSync(async () => {
                 try {
                     await self.initConnection();
                 }
@@ -1393,9 +1460,9 @@ export class REMInterfaceServer extends ProtoServer {
                 url = '/config/checkemit'
                 data = { eventName: "checkemit", property: "result", value: 'success', connectionId: result.obj.id }
                 // wait for REM server to finish resetting
-                setTimeout(async () => {
+                setTimeoutSync(async () => {
                     try {
-                        let _tmr = setTimeout(() => { return reject(new Error(`initConnection: No socket response received.  Check REM→njsPC communications.`)) }, 5000);
+                        let _tmr = setTimeoutSync(() => { return reject(new Error(`initConnection: No socket response received.  Check REM→njsPC communications.`)) }, 5000);
                         let srv: HttpServer = webApp.findServer('http') as HttpServer;
                         srv.addListenerOnce('/checkemit', (data: any) => {
                             // if we receive the emit, data will work both ways.
@@ -1533,7 +1600,7 @@ export class REMInterfaceServer extends ProtoServer {
             });
             this.isRunning = true;
         }
-        catch (err) { logger.error(err); }
+        catch (err) { logger.error(`Error Initializing Sockets: ${err.message}`); }
     }
     private isJSONString(s: string): boolean {
         if (typeof s !== 'string') return false;
@@ -1569,7 +1636,7 @@ export class REMInterfaceServer extends ProtoServer {
             }
             return (response.status.code === 200) ? JSON.parse(response.data) : [];
         }
-        catch (err) { logger.error(err); }
+        catch (err) { logger.error(`getDevices: ${err.message}`); }
     }
 }
 export class BackupFile {
@@ -1652,16 +1719,18 @@ export class RestoreFile {
                 this.njsPC.poolConfig = await this.extractFile(zip, 'njsPC/data/poolConfig.json');
                 this.njsPC.poolState = await this.extractFile(zip, 'njsPC/data/poolState.json');
             }
-            for (let i = 0; i < this.options.servers.length; i++) {
-                // Extract each server from the file.
-                let srv = this.options.servers[i];
-                if (srv.backup && srv.success) {
-                    this.servers.push({
-                        name: srv.name,
-                        uuid: srv.uuid,
-                        serverConfig: await this.extractFile(zip, `${srv.name}/serverConfig.json`),
-                        controllerConfig: await this.extractFile(zip, `${srv.name}/data/controllerConfig.json`)
-                    });
+            if (typeof this.options.servers !== 'undefined') {
+                for (let i = 0; i < this.options.servers.length; i++) {
+                    // Extract each server from the file.
+                    let srv = this.options.servers[i];
+                    if (srv.backup && srv.success) {
+                        this.servers.push({
+                            name: srv.name,
+                            uuid: srv.uuid,
+                            serverConfig: await this.extractFile(zip, `${srv.name}/serverConfig.json`),
+                            controllerConfig: await this.extractFile(zip, `${srv.name}/data/controllerConfig.json`)
+                        });
+                    }
                 }
             }
         } catch(err) { this.errors.push(err); logger.error(`Error extracting restore options from ${file}: ${err.message}`); }

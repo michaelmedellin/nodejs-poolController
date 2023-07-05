@@ -1,5 +1,6 @@
 /*  nodejs-poolController.  An application to control pool equipment.
-Copyright (C) 2016, 2017, 2018, 2019, 2020.  Russell Goldin, tagyoureit.  russ.goldin@gmail.com
+Copyright (C) 2016, 2017, 2018, 2019, 2020, 2021, 2022.  
+Russell Goldin, tagyoureit.  russ.goldin@gmail.com
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as
@@ -31,13 +32,16 @@ import { conn } from './comms/Comms';
 import { versionCheck } from "../config/VersionCheck";
 import { NixieControlPanel } from "./nixie/Nixie";
 import { NixieBoard } from 'controller/boards/NixieBoard';
-import { child } from "winston";
+import { MockSystemBoard } from "../anslq25/boards/MockSystemBoard";
+import { MockBoardFactory } from "../anslq25/boards/MockBoardFactory";
+import { ScreenLogicComms } from "./comms/ScreenLogic";
 
 interface IPoolSystem {
     cfgPath: string;
     data: any;
     stopAsync(): void;
     persist(): void;
+    anslq25: Anslq25;
     general: General;
     equipment: Equipment;
     configVersion: ConfigVersion;
@@ -71,12 +75,13 @@ interface IPoolSystem {
 export class PoolSystem implements IPoolSystem {
     public _hasChanged: boolean = false;
     public isReady: boolean = false;
+    private _startOCPTimer: NodeJS.Timeout;
     constructor() {
         this.cfgPath = path.posix.join(process.cwd(), '/data/poolConfig.json');
     }
-    public getAvailableControllerTypes() {
+    public getAvailableControllerTypes(include:string[] = ['easytouch', 'intellitouch', 'intellicenter', 'suntouch', 'nixie']) {
         let arr = [];
-        arr.push({
+        if (include.indexOf('easytouch')>=0) arr.push({
             type: 'easytouch', name: 'EasyTouch',
             models: [
                 { val: 0, name: 'ET28', part: 'ET2-8', desc: 'EasyTouch2 8', circuits: 8, bodies: 2, shared: true },
@@ -89,10 +94,10 @@ export class PoolSystem implements IPoolSystem {
                 { val: 128, name: 'ET8', part: 'ET-8', desc: 'EasyTouch 8', circuits: 8, bodies: 2, shared: true },
                 { val: 129, name: 'ET8P', part: 'ET-8P', desc: 'EasyTouch 8', circuits: 8, bodies: 1, shared: false },
                 { val: 130, name: 'ET4', part: 'ET-4', desc: 'EasyTouch 4', circuits: 4, bodies: 2, shared: true },
-                { val: 129, name: 'ET4P', part: 'ET-4P', desc: 'EasyTouch 4P', circuits: 4, bodies: 1, shared: false }
+                { val: 131, name: 'ET4P', part: 'ET-4P', desc: 'EasyTouch 4P', circuits: 4, bodies: 1, shared: false }
             ]
         });
-        arr.push({
+        if (include.indexOf('intellitouch')>=0) arr.push({
             type: 'intellitouch', name: 'IntelliTouch',
             models: [
                 { val: 0, name: 'IT5', part: 'i5+3', desc: 'IntelliTouch i5+3', bodies: 2, circuits: 6, shared: true },
@@ -108,7 +113,7 @@ export class PoolSystem implements IPoolSystem {
             ]
 
         });
-        arr.push({
+        if (include.indexOf('intellicenter')>=0) arr.push({
             type: 'intellicenter', name: 'IntelliCenter',
             models: [
                 { val: 0, name: 'i5P', part: '523125Z', desc: 'IntelliCenter i5P', bodies: 1, valves: 2, circuits: 5, shared: false, dual: false, chlorinators: 1, chemControllers: 1 },
@@ -120,7 +125,14 @@ export class PoolSystem implements IPoolSystem {
                 { val: 7, name: 'i10D', part: '523029Z', desc: 'IntelliCenter i10D', bodies: 2, valves: 2, circuits: 11, shared: false, dual: true, chlorinators: 2, chemControllers: 2 },
             ]
         });
-        arr.push({
+        if (include.indexOf('suntouch') >= 0) arr.push({
+            type: 'suntouch', name: 'SunTouch',
+            models: [
+                { val: 41, name: 'stshared', part: '520820', desc: 'Pool and Spa controller', bodies: 2, valves: 4, circuits: 5, single: false, shared: true, dual: false, features: 4, chlorinators: 1, chemControllers: 1 },
+                { val: 40, name: 'stsingle', part: '520819', desc: 'Pool or Spa controller', bodies: 2, valves: 4, circuits: 5, single: true, shared: true, dual: false, features: 4, chlorinators: 1, chemControllers: 1 }
+            ]
+        })
+        if (include.indexOf('nixie') >= 0) arr.push({
             type: 'nixie', name: 'Nixie', canChange: true,
             models: [
                 { val: 0, name: 'nxp', part: 'NXP', desc: 'Nixie Single Body', bodies: 1, shared: false, dual: false },
@@ -139,7 +151,9 @@ export class PoolSystem implements IPoolSystem {
         if (this.controllerType === 'unknown' || typeof this.controllerType === 'undefined') {
             // Delay for 7.5 seconds to give any OCPs a chance to start emitting messages.
             logger.info(`Listening for any installed OCPs`);
-            setTimeout(() => { self.initNixieController(); }, 7500);
+            if (this._startOCPTimer) clearTimeout(this._startOCPTimer);
+            this._startOCPTimer = null;
+            this._startOCPTimer = setTimeout(() => { self.initNixieController(); }, 7500);
         }
         else
             this.initNixieController();
@@ -171,6 +185,7 @@ export class PoolSystem implements IPoolSystem {
             }
         }
         this.data = this.onchange(cfg, function () { sys.dirty = true; });
+        this.anslq25 = new Anslq25(this.data, 'anslq25');
         this.general = new General(this.data, 'pool');
         this.equipment = new Equipment(this.data, 'equipment');
         this.configVersion = new ConfigVersion(this.data, 'configVersion');
@@ -193,6 +208,7 @@ export class PoolSystem implements IPoolSystem {
         this.chemDosers = new ChemDoserCollection(this.data, 'chemDosers');
         this.filters = new FilterCollection(this.data, 'filters');
         this.board = BoardFactory.fromControllerType(this.controllerType, this);
+        this.anslq25Board = MockBoardFactory.fromControllerType(this.data.anslq25.controllerType, this);
     }
     // This performs a safe load of the config file.  If the file gets corrupt or actually does not exist
     // it will not break the overall system and allow hardened recovery.
@@ -211,15 +227,55 @@ export class PoolSystem implements IPoolSystem {
     }
 
     public resetSystem() {
-        conn.pauseAll();
-        this.resetData();
-        state.resetData();
-        this.data.controllerType === 'unknown';
-        state.equipment.controllerType = ControllerType.Unknown;
-        this.controllerType = ControllerType.Unknown;
-        state.status = 0;
-        this.board = BoardFactory.fromControllerType(ControllerType.Unknown, this);
-        setTimeout(function () { state.status = 0; conn.resumeAll(); }, 0);
+        logger.info(`Resetting System to initial defaults`);
+        (async () => {
+            await this.board.closeAsync();
+            logger.info(`Closed ${this.controllerType} board`);
+            this.controllerType = ControllerType.Unknown;
+        })();
+
+        /*
+        let self = this;
+        if (this.controllerType === ControllerType.Nixie) {
+            (async () => {
+                await this.board.closeAsync();
+                this.board = BoardFactory.fromControllerType(ControllerType.Nixie, this);
+                let board = sys.board as NixieBoard;
+                await board.initNixieBoard();
+            })();
+            state.status = 0;
+
+            logger.info(`Listening for any installed OCPs`);
+            setTimeout(() => { self.initNixieController(); }, 7500);
+
+        }
+        else {
+            conn.pauseAll();
+            this.resetData();
+            state.resetData();
+            this.data.controllerType === 'unknown';
+            state.equipment.controllerType = ControllerType.Unknown;
+            this.controllerType = ControllerType.Unknown;
+            state.status = 0;
+            this.board = BoardFactory.fromControllerType(ControllerType.Unknown, this);
+            setTimeout(function () { state.status = 0; conn.resumeAll(); }, 0);
+        }
+        */
+    }
+    public get anslq25ControllerType(): ControllerType { return this.data.anslq25.controllerType as ControllerType; }
+    public set anslq25ControllerType(val: ControllerType) {
+        //let self = this;
+        if (this.anslq25ControllerType !== val) {
+            console.log(`Mock Controller type changed from ${this.anslq25.controllerType} to ${val}`);
+            // Only go in here if there is a change to the controller type.
+            //this.resetData(); // Clear the configuration data.
+            //state.resetData(); // Clear the state data.
+            this.data.anslq25.controllerType = val;
+            //EquipmentStateMessage.initDefaults();
+            // We are actually changing the config so lets clear out all the data.
+            this.anslq25Board = MockBoardFactory.fromControllerType(val, this);
+            //if (this.data.anslq25.controllerType === ControllerType.Unknown) setTimeout(() => { self.initNixieController(); }, 7500);
+        }
     }
     public get controllerType(): ControllerType { return this.data.controllerType as ControllerType; }
     public set controllerType(val: ControllerType) {
@@ -229,11 +285,17 @@ export class PoolSystem implements IPoolSystem {
             // Only go in here if there is a change to the controller type.
             this.resetData(); // Clear the configuration data.
             state.resetData(); // Clear the state data.
+            state.status = 0; // We are performing a re-initialize.
             this.data.controllerType = val;
             EquipmentStateMessage.initDefaults();
+           
             // We are actually changing the config so lets clear out all the data.
             this.board = BoardFactory.fromControllerType(val, this);
-            if (this.data.controllerType === ControllerType.Unknown) setTimeout(() => { self.initNixieController(); }, 7500);
+            if (this.data.controllerType === ControllerType.Unknown) {
+                if (this._startOCPTimer) clearTimeout(this._startOCPTimer);
+                this._startOCPTimer = null;
+                this._startOCPTimer = setTimeout(() => { self.initNixieController(); }, 7500);
+            }
         }
     }
     public resetData() {
@@ -266,7 +328,7 @@ export class PoolSystem implements IPoolSystem {
     public async stopAsync() {
         if (this._timerChanges) clearTimeout(this._timerChanges);
         if (this._timerDirty) clearTimeout(this._timerDirty);
-        logger.info(`Shut down sys (config) object timers`);
+        logger.info(`Shut down sys (config) object timers`); 
         return this.board.stopAsync();
     }
     public initNixieController() {
@@ -281,6 +343,7 @@ export class PoolSystem implements IPoolSystem {
         }
     }
     public board: SystemBoard = new SystemBoard(this);
+    public anslq25Board: MockSystemBoard; // = new MockSystemBoard(this);
     public ncp: NixieControlPanel = new NixieControlPanel();
     public processVersionChanges(ver: ConfigVersion) { this.board.requestConfiguration(ver); }
     public checkConfiguration() { this.board.checkConfiguration(); }
@@ -292,6 +355,7 @@ export class PoolSystem implements IPoolSystem {
     protected _timerChanges: NodeJS.Timeout;
     protected _needsChanges: boolean;
     // All the equipment items below.
+    public anslq25: Anslq25;
     public general: General;
     public equipment: Equipment;
     public configVersion: ConfigVersion;
@@ -313,6 +377,7 @@ export class PoolSystem implements IPoolSystem {
     public chemControllers: ChemControllerCollection;
     public chemDosers: ChemDoserCollection;
     public filters: FilterCollection;
+    public screenlogic: ScreenLogicComms;
     public appVersion: string;
     public get dirty(): boolean { return this._isDirty; }
     public set dirty(val) {
@@ -610,7 +675,9 @@ class EqItemCollection<T> implements IEqItemCollection {
     public get length(): number { return typeof this.data !== 'undefined' ? this.data.length : 0; }
     public set length(val: number) { if (typeof val !== 'undefined' && typeof this.data !== 'undefined') this.data.length = val; }
     public add(obj: any): T { this.data.push(obj); return this.createItem(obj); }
-    public get(): any { return this.data; }
+    public get(bCopy?: boolean): any {
+        return bCopy ? JSON.parse(JSON.stringify(this.data)) : this.data;
+    }
     public emitEquipmentChange() { webApp.emitToClients(this.name, this.data); }
     public sortByName() {
         this.sort((a, b) => {
@@ -624,8 +691,11 @@ class EqItemCollection<T> implements IEqItemCollection {
     }
     public sort(fn: (a, b) => number) { this.data.sort(fn); }
     public count(fn: (value: T, index?: any, array?: any[]) => boolean): number { return this.data.filter(fn).length; }
-    public getNextEquipmentId(range: EquipmentIdRange, exclude?: number[]): number {
-        for (let i = range.start; i <= range.end; i++) {
+    public getNextEquipmentId(range?: EquipmentIdRange, exclude?: number[]): number {
+        // RG 12-4-22 for some reason extend(true, {...}, range) was not evaluating the accessors 
+        // for range.start & range.end
+        let r = extend(true, { start: 1, end: 255 }, {start: range.start }, {end: range.end});  
+        for (let i = r.start; i <= r.end; i++) {
             let eq = this.data.find(elem => elem.id === i);
             if (typeof eq === 'undefined') {
                 if (typeof exclude !== 'undefined' && exclude.indexOf(i) !== -1) continue;
@@ -653,6 +723,23 @@ class EqItemCollection<T> implements IEqItemCollection {
         }
         return typeof minId !== 'undefined' ? minId : defId;
     }
+}
+export class Anslq25 extends EqItem {
+    ctor(data: any, name?: any): Anslq25 { return new Anslq25(data, name || 'anslq25'); }
+    public initData(){
+        if (typeof this.data.isActive === 'undefined') this.data.isActive = false;
+    }
+    public get controllerType(): ControllerType { return this.data.controllerType; }
+    public set controllerType(val: ControllerType) { this.setDataVal('controllerType', val); }
+    public get model(): number { return this.data.model; }
+    public set model(val: number) { this.setDataVal('model', val); }
+    public get isActive(): boolean { return this.data.isActive; }
+    public set isActive(val: boolean) { this.setDataVal('isActive', val); }
+    public get portId(): number { return this.data.portId; }
+    public set portId(val: number) { this.setDataVal('portId', val); }
+    public get broadcastComms(): boolean { return this.data.broadcastComms; }
+    public set broadcastComms(val: boolean) { this.setDataVal('broadcastComms', val); }
+    public get modules(): ExpansionModuleCollection { return new ExpansionModuleCollection(this.data, "modules"); }
 }
 export class General extends EqItem {
     ctor(data: any, name?: any): General { return new General(data, name || 'pool'); }
@@ -780,17 +867,6 @@ export class Options extends EqItem {
     public set cleanerSolarDelay(val: boolean) { this.setDataVal('cleanerSolarDelay', val); }
     public get cleanerSolarDelayTime(): number { return this.data.cleanerSolarDelayTime; }
     public set cleanerSolarDelayTime(val: number) { this.setDataVal('cleanerSolarDelayTime', val); }
-
-    //public get airTempAdj(): number { return typeof this.data.airTempAdj === 'undefined' ? 0 : this.data.airTempAdj; }
-    //public set airTempAdj(val: number) { this.setDataVal('airTempAdj', val); }
-    //public get waterTempAdj1(): number { return typeof this.data.waterTempAdj1 === 'undefined' ? 0 : this.data.waterTempAdj1; }
-    //public set waterTempAdj1(val: number) { this.setDataVal('waterTempAdj1', val); }
-    //public get solarTempAdj1(): number { return typeof this.data.solarTempAdj1 === 'undefined' ? 0 : this.data.solarTempAdj1; }
-    //public set solarTempAdj1(val: number) { this.setDataVal('solarTempAdj1', val); }
-    //public get waterTempAdj2(): number { return typeof this.data.waterTempAdj2 === 'undefined' ? 0 : this.data.waterTempAdj2; }
-    //public set waterTempAdj2(val: number) { this.setDataVal('waterTempAdj2', val); }
-    //public get solarTempAdj2(): number { return typeof this.data.solarTempAdj2 === 'undefined' ? 0 : this.data.solarTempAdj2; }
-    //public set solarTempAdj2(val: number) { this.setDataVal('solarTempAd2', val); }
 }
 export class VacationOptions extends ChildEqItem {
     public initData() {
@@ -1355,14 +1431,22 @@ export class PumpCollection extends EqItemCollection<Pump> {
     constructor(data: any, name?: string) { super(data, name || "pumps"); }
     public createItem(data: any): Pump { return new Pump(data); }
     public getDualSpeed(add?: boolean): Pump {
-        return this.getItemById(10, add, { id: 10, type: 65, name: 'Two Speed' });
+        let ds = sys.board.valueMaps.pumpTypes.getValue('ds');
+        let pump = this.find(x => x.type === ds);
+        return typeof pump !== 'undefined' ? pump : this.getItemById(10, add, { id: 10, type: ds, name: 'Two Speed', master: 0 });
     }
-    public getPumpByAddress(address: number, add?: boolean, data?: any) {
+    public removePumpByAddress(address: number) {
         let pmp = this.find(elem => elem.address === address);
-        if (typeof pmp !== 'undefined') return this.createItem(pmp);
-        if (typeof add !== 'undefined' && add) return this.add(data || { id: this.data.length + 1, address: address });
-        return this.createItem(data || { id: this.data.length + 1, address: address });
+        if (typeof pmp !== 'undefined') return this.removeItemById(pmp.id);
+        return pmp;
     }
+    public getPumpByAddress(address: number, add?: boolean, data?: any) : Pump {
+        let pmp = this.find(elem => elem.address === address);
+        if (typeof pmp !== 'undefined') return pmp;
+        if (typeof add !== 'undefined' && add) return this.add(data || { id: this.data.length + 1, address: address });
+        return this.createItem(data || { id: this.getNextEquipmentId(), address: address });
+    }
+    public getNextEquipmentId(range?: EquipmentIdRange, exclude?: number[]): number { return super.getNextEquipmentId(typeof range === 'undefined' ? sys.board.equipmentIds.pumps : range, exclude); }
 }
 export class Pump extends EqItem {
     public dataName = 'pumpConfig';
@@ -2404,6 +2488,7 @@ export class ChemicalPh extends Chemical {
     public getExtended() {
         let chem = super.getExtended();
         chem.probe = this.probe.getExtended();
+        chem.tank = this.tank.getExtended();
         chem.phSupply = sys.board.valueMaps.phSupplyTypes.transform(this.phSupply);
         chem.doserType = sys.board.valueMaps.phDoserTypes.transform(this.doserType);
         return chem;
@@ -2434,6 +2519,7 @@ export class ChemicalORP extends Chemical {
     public getExtended() {
         let chem = super.getExtended();
         chem.probe = this.probe.getExtended();
+        chem.tank = this.tank.getExtended();
         chem.doserType = sys.board.valueMaps.orpDoserTypes.transform(this.doserType);
         return chem;
     }
@@ -2612,5 +2698,22 @@ export class AlarmSetting extends ChildEqItem {
     public set low(val: number) { this.setDataVal('low', val); }
     public get high(): number { return this.data.high; }
     public set high(val: number) { this.setDataVal('high', val); }
+}
+export class Screenlogic extends EqItem {
+    ctor(data: any, name?: any): General { return new General(data, name || 'pool'); }
+    public get enabled(): boolean { return this.data.enabled; }
+    public set enabled(val: boolean) { this.setDataVal('enabled', val); }
+    public get type(): 'local'|'remote' { return this.data.type; }
+    public set type(val: 'local'|'remote') { this.setDataVal('type', val); }
+    public get systemName(): string { return this.data.systemName; }
+    public set systemName(val: string) { this.setDataVal('systemName', val); }
+    public get password(): string { return this.data.password; }
+    public set password(val: string) { this.setDataVal('password', val); }
+
+    public clear(master: number = -1) {
+        if (master === -1)
+            super.clear();
+    }
+
 }
 export let sys = new PoolSystem();

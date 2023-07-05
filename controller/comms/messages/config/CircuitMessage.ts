@@ -1,5 +1,6 @@
 /*  nodejs-poolController.  An application to control pool equipment.
-Copyright (C) 2016, 2017, 2018, 2019, 2020.  Russell Goldin, tagyoureit.  russ.goldin@gmail.com
+Copyright (C) 2016, 2017, 2018, 2019, 2020, 2021, 2022.  
+Russell Goldin, tagyoureit.  russ.goldin@gmail.com
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as
@@ -154,7 +155,13 @@ export class CircuitMessage {
             let circuit: Circuit = sys.circuits.getItemById(circuitId++, true);
 
             // For some odd reason the circuit type for circuit 6 does not equal pool while circuit 1 does equal spa.
-            circuit.type = circuitId - 1 !== 6 ? msg.extractPayloadByte(i) : 12;
+            // Apparently in later versions, spa does not do this either
+            if (circuit.id === 1)
+                circuit.type = 13
+            else if (circuit.id == 6)
+                circuit.type = 12
+            else
+                circuit.type = msg.extractPayloadByte(i);
             circuit.isActive = true;
             circuit.master = 0;
         }
@@ -347,11 +354,28 @@ export class CircuitMessage {
                 sys.lightGroups.removeItemById(sys.board.equipmentIds.circuitGroups.start);
                 state.lightGroups.removeItemById(sys.board.equipmentIds.circuitGroups.start);
             }
-            sys.features.removeItemById(id);
-            state.features.removeItemById(id);
-            sys.circuits.removeItemById(id);
-            state.circuits.removeItemById(id);
+            if (!sys.board.equipmentIds.circuits.isInRange(id)) {
+                sys.circuits.removeItemById(id);
+                state.circuits.removeItemById(id);
+            }
+            else {
+                let circuit = sys.circuits.getItemById(id, true);
+                let cstate = sys.circuits.getItemById(id, true);
+                cstate.showInFeatures = circuit.showInFeatures = false;
+                cstate.type = circuit.type = functionId & 63;
+                cstate.name = circuit.name = sys.board.circuits.getNameById(nameId || id);
+                cstate.nameId = circuit.nameId = nameId || id;
+                cstate.isActive = circuit.isActive = true;
+            }
+            if (!sys.board.equipmentIds.features.isInRange(id)) {
+                sys.features.removeItemById(id);
+                state.features.removeItemById(id);
+            }
             sys.circuitGroups.removeItemById(id);
+            //sys.features.removeItemById(id);
+            //state.features.removeItemById(id);
+            //sys.circuits.removeItemById(id);
+            //state.circuits.removeItemById(id);
         }
         msg.isProcessed = true;
     }

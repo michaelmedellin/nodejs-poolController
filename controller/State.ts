@@ -1,5 +1,6 @@
 /*  nodejs-poolController.  An application to control pool equipment.
-Copyright (C) 2016, 2017, 2018, 2019, 2020.  Russell Goldin, tagyoureit.  russ.goldin@gmail.com
+Copyright (C) 2016, 2017, 2018, 2019, 2020, 2021, 2022.  
+Russell Goldin, tagyoureit.  russ.goldin@gmail.com
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as
@@ -98,7 +99,7 @@ export class State implements IState {
                 lines = buff.toString().split('\n');
             }
             return lines;
-        } catch (err) { logger.error(err); }
+        } catch (err) { logger.error(`Error reading log file ${logFile}: ${err.message}`); }
     }
     public async logData(logFile: string, data: any) {
         try {
@@ -115,7 +116,7 @@ export class State implements IState {
             else
                 lines.unshift(data.toString());
             fs.writeFileSync(logPath, lines.join('\n'));
-        } catch (err) { logger.error(err); }
+        } catch (err) { logger.error(`Error reading or writing logData ${logFile}: ${err.message}`); }
     }
     public getState(section?: string): any {
         // todo: getState('time') returns an array of chars.  Needs no be fixed.
@@ -282,7 +283,10 @@ export class State implements IState {
             }
         }
     }
-    public get time(): Timestamp { return this._dt; }
+    public get time(): Timestamp {
+        if (typeof this._dt === 'undefined' || !this._dt.isValid) this._dt = new Timestamp(new Date());
+        return this._dt;
+    }
     public get mode(): number { return typeof (this.data.mode) !== 'undefined' ? this.data.mode.val : -1; }
     public set mode(val: number) {
         let m = sys.board.valueMaps.panelModes.transform(val);
@@ -680,7 +684,7 @@ class EqStateCollection<T> {
         return arr;
     }
     // Finds an item and returns undefined if it doesn't exist.
-    public find(f: (value: any, index?: number, obj?: any) => boolean): T {
+    public find(f: (value: T, index?: number, obj?: any) => boolean): T {
         let itm = this.data.find(f);
         if (typeof itm !== 'undefined') return this.createItem(itm);
     }
@@ -965,7 +969,7 @@ export class PumpState extends EqState {
             this.hasChanged = true;
         }
     }
-    public get virtualControllerStatus(): number {
+/*     public get virtualControllerStatus(): number {
         return typeof (this.data.virtualControllerStatus) !== 'undefined' ? this.data.virtualControllerStatus.val : -1;
     }
     public set virtualControllerStatus(val: number) {
@@ -973,7 +977,7 @@ export class PumpState extends EqState {
             this.data.virtualControllerStatus = sys.board.valueMaps.virtualControllerStatus.transform(val);
             this.hasChanged = true;
         }
-    }
+    } */
     public get targetSpeed(): number { return this.data.targetSpeed; } // used for virtual controller
     public set targetSpeed(val: number) { this.setDataVal('targetSpeed', val); }
     public get type() { return typeof (this.data.type) !== 'undefined' ? this.data.type.val : -1; }
@@ -2593,10 +2597,22 @@ export class ChemControllerState extends EqState implements IChemControllerState
             this.hasChanged = true;
         }
     }
+    public getEmitData(): any {
+        let chem = sys.chemControllers.getItemById(this.id);
+        let obj = this.get(true);
+        obj.address = chem.address;
+        obj.borates = chem.borates;
+        obj.saturationIndex = this.saturationIndex || 0;
+        obj.alkalinity = chem.alkalinity;
+        obj.calciumHardness = chem.calciumHardness;
+        obj.cyanuricAcid = chem.cyanuricAcid;
+        return obj;
+    }
     public getExtended(): any {
         let chem = sys.chemControllers.getItemById(this.id);
         let obj = this.get(true);
         obj.address = chem.address;
+        obj.borates = chem.borates;
         obj.saturationIndex = this.saturationIndex || 0;
         obj.alkalinity = chem.alkalinity;
         obj.calciumHardness = chem.calciumHardness;
@@ -3436,7 +3452,7 @@ export class FilterState extends EqState {
             this.hasChanged = true;
         }
     }
-    public get pressureUnits(): number { return this.data.pressureUnits; }
+    public get pressureUnits(): number { return typeof this.data.pressureUnits === 'undefined' ? 0 : this.data.pressureUnits.val; }
     public set pressureUnits(val: number) {
         if (this.pressureUnits !== val) {
             this.setDataVal('pressureUnits', sys.board.valueMaps.pressureUnits.transform(val));

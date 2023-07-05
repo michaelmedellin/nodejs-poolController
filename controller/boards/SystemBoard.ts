@@ -1,5 +1,6 @@
 /*  nodejs-poolController.  An application to control pool equipment.
-Copyright (C) 2016, 2017, 2018, 2019, 2020.  Russell Goldin, tagyoureit.  russ.goldin@gmail.com
+Copyright (C) 2016, 2017, 2018, 2019, 2020, 2021, 2022.  
+Russell Goldin, tagyoureit.  russ.goldin@gmail.com
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as
@@ -23,7 +24,8 @@ import { EquipmentNotFoundError, InvalidEquipmentDataError, InvalidEquipmentIdEr
 import { ncp } from "../nixie/Nixie";
 import { BodyTempState, ChemControllerState, ChemDoserState, ChlorinatorState, CircuitGroupState, FilterState, ICircuitGroupState, ICircuitState, LightGroupState, ScheduleState, state, TemperatureState, ValveState, VirtualCircuitState } from '../State';
 import { RestoreResults } from '../../web/Server';
-import { group } from 'console';
+import { setTimeout } from 'timers/promises';
+import { setTimeout as setTimeoutSync } from 'timers';
 
 
 export class byteValueMap extends Map<number, any> {
@@ -265,7 +267,8 @@ export class byteValueMaps {
     [134, { name: 'heatEnable', desc: 'Heat Enable', assignableToPumpCircuit: false }],
     [135, { name: 'pumpSpeedUp', desc: 'Pump Speed +', assignableToPumpCircuit: false }],
     [136, { name: 'pumpSpeedDown', desc: 'Pump Speed -', assignableToPumpCircuit: false }],
-    [255, { name: 'notused', desc: 'NOT USED', assignableToPumpCircuit: true }]
+    [255, { name: 'notused', desc: 'NOT USED', assignableToPumpCircuit: true }],
+    [258, { name: 'anyHeater', desc: 'Any Heater' }],
   ]);
   public lightThemes: byteValueMap = new byteValueMap([
     [0, { name: 'off', desc: 'Off' }],
@@ -821,12 +824,12 @@ export class byteValueMaps {
   ]);
   public eqMessageSeverities: byteValueMap = new byteValueMap([
     [-1, { name: 'unspecified', desc: 'Unspecified' }],
-    [0, { name: 'info', desc: 'Information' }],
-    [1, { name: 'reminder', desc: 'Reminder' }],
-    [2, { name: 'alert', desc: 'Alert' }],
-    [3, { name: 'warning', desc: 'Warning' }],
-    [4, { name: 'error', desc: 'Error' }],
-    [5, { name: 'fatal', desc: 'Fatal' }]
+    [0, { name: 'info', desc: 'Information', icon: 'fas fa-circle-info' }],
+    [1, { name: 'reminder', desc: 'Reminder', icon: 'fas fa-bell' }],
+    [2, { name: 'alert', desc: 'Alert', icon: 'fas fa-circle-exclamation' }],
+    [3, { name: 'warning', desc: 'Warning', icon: 'fas fa-circle-exclamation' }],
+    [4, { name: 'error', desc: 'Error', icon: 'fas fa-triangle-exclamation' }],
+    [5, { name: 'fatal', desc: 'Fatal', icon: 'fas fa-skull-crossbones' }]
   ]);
   // need to validate these...
   public delay: byteValueMap = new byteValueMap([
@@ -858,7 +861,8 @@ export class SystemBoard {
   protected _statusInterval: number = 3000;
 
   // TODO: (RSG) Do we even need to pass in system?  We don't seem to be using it and we're overwriting the var with the SystemCommands anyway.
-  constructor(system: PoolSystem) { }
+    constructor(system: PoolSystem) { }
+    public async closeAsync() { };
   protected _modulesAcquired: boolean = true;
   public needsConfigChanges: boolean = false;
   public valueMaps: byteValueMaps = new byteValueMaps();
@@ -958,7 +962,7 @@ export class SystemBoard {
     } catch (err) { state.status = 255; logger.error(`Error performing processStatusAsync ${err.message}`); }
     finally {
       this.suspendStatus(false);
-      if (this.statusInterval > 0) this._statusTimer = setTimeout(async () => await self.processStatusAsync(), this.statusInterval);
+      if (this.statusInterval > 0) this._statusTimer = setTimeoutSync(async () => await self.processStatusAsync(), this.statusInterval);
     }
   }
     public async syncEquipmentItems() {
@@ -1054,7 +1058,10 @@ export class SystemCommands extends BoardCommands {
         try {
             let ctx = await sys.board.system.validateRestore(rest);
             // Restore the general stuff.
-            if (ctx.general.update.length > 0) await sys.board.system.setGeneralAsync(ctx.general.update[0]);
+            if (ctx.general.update.length > 0) try {
+                await sys.board.system.setGeneralAsync(ctx.general.update[0]);
+                res.addModuleSuccess('general', 'Update General Settings')
+            } catch (err) { res.addModuleError('general', err); }
             for (let i = 0; i < ctx.customNames.update.length; i++) {
                 let cn = ctx.customNames.update[i];
                 try {
@@ -1079,6 +1086,7 @@ export class SystemCommands extends BoardCommands {
             await sys.board.chlorinator.restore(rest, ctx, res);
             await sys.board.chemControllers.restore(rest, ctx, res);
             await sys.board.schedules.restore(rest, ctx, res);
+            state.cleanupState();
             return res;
             //await sys.board.covers.restore(rest, ctx);
         } catch (err) { logger.error(`Error restoring njsPC server: ${err.message}`); res.addModuleError('system', err.message); return Promise.reject(err); }
@@ -1089,13 +1097,16 @@ export class SystemCommands extends BoardCommands {
 
             // Step 1 - Verify that the boards are the same.  For instance you do not want to restore an IntelliTouch to an IntelliCenter.
             let cfg = rest.poolConfig;
-            if (sys.controllerType === cfg.controllerType) {
+            if (sys.controllerType === cfg.controllerType || sys.controllerType === ControllerType.Nixie || sys.controllerType === ControllerType.None || sys.controllerType === ControllerType.Unknown) {
+                sys.controllerType = cfg.controllerType;
                 ctx.customNames = { errors: [], warnings: [], add: [], update: [], remove: [] };
                 let customNames = sys.customNames.get();
-                for (let i = 0; i < rest.poolConfig.customNames.length; i++) {
-                    let cn = customNames.find(elem => elem.id === rest.poolConfig.customNames[i].id);
-                    if (typeof cn === 'undefined') ctx.customNames.add.push(rest.poolConfig.customNames[i]);
-                    else if (JSON.stringify(rest.poolConfig.customNames[i]) !== JSON.stringify(cn)) ctx.customNames.update.push(cn);
+                if (typeof rest.poolConfig.customNames !== 'undefined') {
+                    for (let i = 0; i < rest.poolConfig.customNames.length; i++) {
+                        let cn = customNames.find(elem => elem.id === rest.poolConfig.customNames[i].id);
+                        if (typeof cn === 'undefined') ctx.customNames.add.push(rest.poolConfig.customNames[i]);
+                        else if (JSON.stringify(rest.poolConfig.customNames[i]) !== JSON.stringify(cn)) ctx.customNames.update.push(cn);
+                    }
                 }
                 ctx.general = { errors: [], warnings: [], add: [], update: [], remove: [] };
                 if (JSON.stringify(sys.general.get()) !== JSON.stringify(cfg.pool)) ctx.general.update.push(cfg.pool);
@@ -1113,7 +1124,6 @@ export class SystemCommands extends BoardCommands {
                 ctx.schedules = await sys.board.schedules.validateRestore(rest);
             }
             else ctx.board.errors.push(`Panel Types do not match cannot restore backup from ${sys.controllerType} to ${rest.poolConfig.controllerType}`);
-
             return ctx;
 
         } catch (err) { logger.error(`Error validating restore file: ${err.message}`); return Promise.reject(err); }
@@ -1285,6 +1295,7 @@ export class SystemCommands extends BoardCommands {
                                 else temp = parseFloat(obj[prop]);
                             }
                             if (isNaN(temp)) return reject(new InvalidEquipmentDataError(`Invalid value for ${prop} ${obj[prop]}`, `Temps:${prop}`, obj[prop]));
+                            state.temps.waterSensor4 = sys.equipment.tempSensors.getCalibration('water4') + temp;
                             let body = state.temps.bodies.getItemById(4);
                             if (body.isOn) body.temp = state.temps.waterSensor4;
                         }
@@ -1436,7 +1447,7 @@ export class SystemCommands extends BoardCommands {
             catch (err) { reject(err); }
         });
     }
-    public async setCustomNameAsync(data: any): Promise<CustomName> {
+    public async setCustomNameAsync(data: any, send: boolean = false): Promise<CustomName> {
         return new Promise<CustomName>((resolve, reject) => {
             let id = parseInt(data.id, 10);
             if (isNaN(id)) return reject(new InvalidEquipmentIdError('Invalid Custom Name Id', data.id, 'customName'));
@@ -1902,55 +1913,57 @@ export class BodyCommands extends BoardCommands {
   }
 }
 export class PumpCommands extends BoardCommands {
-  public async restore(rest: { poolConfig: any, poolState: any }, ctx: any, res: RestoreResults): Promise<boolean> {
-    try {
-      // First delete the pumps that should be removed.
-      for (let i = 0; i < ctx.pumps.remove.length; i++) {
-        let p = ctx.pumps.remove[i];
+    public async restore(rest: { poolConfig: any, poolState: any }, ctx: any, res: RestoreResults): Promise<boolean> {
         try {
-          await sys.board.pumps.deletePumpAsync(p);
-          res.addModuleSuccess('pump', `Remove: ${p.id}-${p.name}`);
-        } catch (err) { res.addModuleError('pump', `Remove: ${p.id}-${p.name}: ${err.message}`); }
-      }
-      for (let i = 0; i < ctx.pumps.update.length; i++) {
-        let p = ctx.pumps.update[i];
+            // First delete the pumps that should be removed.
+            for (let i = 0; i < ctx.pumps.remove.length; i++) {
+                let p = ctx.pumps.remove[i];
+                try {
+                    await sys.board.pumps.deletePumpAsync(p);
+                    res.addModuleSuccess('pump', `Remove: ${p.id}-${p.name}`);
+                } catch (err) { res.addModuleError('pump', `Remove: ${p.id}-${p.name}: ${err.message}`); }
+            }
+            if (typeof ctx.pumps.update !== 'undefined') {
+                for (let i = 0; i < ctx.pumps.update.length; i++) {
+                    let p = ctx.pumps.update[i];
+                    try {
+                        await sys.board.pumps.setPumpAsync(p);
+                        res.addModuleSuccess('pump', `Update: ${p.id}-${p.name}`);
+                    } catch (err) { res.addModuleError('pump', `Update: ${p.id}-${p.name}: ${err.message}`); }
+                }
+            }
+            for (let i = 0; i < ctx.pumps.add.length; i++) {
+                let p = ctx.pumps.add[i];
+                try {
+                    // pull a little trick to first add the data then perform the update.  This way we won't get a new id or
+                    // it won't error out.
+                    sys.pumps.getItemById(p.id, true, {id: parseInt(p.id, 10), type: parseInt(p.type, 10) });
+                    await sys.board.pumps.setPumpAsync(p);
+                    res.addModuleSuccess('pump', `Add: ${p.id}-${p.name}`);
+                } catch (err) { res.addModuleError('pump', `Add: ${p.id}-${p.name}: ${err.message}`); }
+            }
+            return true;
+        } catch (err) { logger.error(`Error restoring pumps: ${err.message}`); res.addModuleError('system', `Error restoring pumps: ${err.message}`); return false; }
+    }
+    public async validateRestore(rest: { poolConfig: any, poolState: any }): Promise<{ errors: any, warnings: any, add: any, update: any, remove: any }> {
         try {
-          await sys.board.pumps.setPumpAsync(p);
-          res.addModuleSuccess('pump', `Update: ${p.id}-${p.name}`);
-        } catch (err) { res.addModuleError('pump', `Update: ${p.id}-${p.name}: ${err.message}`); }
-      }
-      for (let i = 0; i < ctx.pumps.add.length; i++) {
-        let p = ctx.pumps.add[i];
-        try {
-          // pull a little trick to first add the data then perform the update.  This way we won't get a new id or
-          // it won't error out.
-          sys.pumps.getItemById(p, true);
-          await sys.board.pumps.setPumpAsync(p);
-          res.addModuleSuccess('pump', `Add: ${p.id}-${p.name}`);
-        } catch (err) { res.addModuleError('pump', `Add: ${p.id}-${p.name}: ${err.message}`); }
-      }
-      return true;
-    } catch (err) { logger.error(`Error restoring pumps: ${err.message}`); res.addModuleError('system', `Error restoring pumps: ${err.message}`); return false; }
-  }
-  public async validateRestore(rest: { poolConfig: any, poolState: any }): Promise<{ errors: any, warnings: any, add: any, update: any, remove: any }> {
-    try {
-      let ctx = { errors: [], warnings: [], add: [], update: [], remove: [] };
-      // Look at pumps.
-      let cfg = rest.poolConfig;
-      for (let i = 0; i < cfg.pumps.length; i++) {
-        let r = cfg.pumps[i];
-        let c = sys.pumps.find(elem => r.id === elem.id);
-        if (typeof c === 'undefined') ctx.add.push(r);
-        else if (JSON.stringify(c.get()) !== JSON.stringify(r)) ctx.update.push(r);
-      }
-      for (let i = 0; i < sys.pumps.length; i++) {
-        let c = sys.pumps.getItemByIndex(i);
-        let r = cfg.pumps.find(elem => elem.id == c.id);
-        if (typeof r === 'undefined') ctx.remove.push(c.get(true));
-      }
-      return ctx;
-    } catch (err) { logger.error(`Error validating pumps for restore: ${err.message}`); }
-  }
+            let ctx = { errors: [], warnings: [], add: [], update: [], remove: [] };
+            // Look at pumps.
+            let cfg = rest.poolConfig;
+            for (let i = 0; i < cfg.pumps.length; i++) {
+                let r = cfg.pumps[i];
+                let c = sys.pumps.find(elem => r.id === elem.id);
+                if (typeof c === 'undefined' || c.type !== r.type || (c.master || 0) !== (r.master || 0)) ctx.add.push(r);
+                else if (JSON.stringify(c.get()) !== JSON.stringify(r)) ctx.update.push(r);
+            }
+            for (let i = 0; i < sys.pumps.length; i++) {
+                let c = sys.pumps.getItemByIndex(i);
+                let r = cfg.pumps.find(elem => elem.id === c.id);
+                if (typeof r === 'undefined' || r.type !== c.type || (r.master || 0) !== (c.master || 0)) ctx.remove.push(c.get(true));
+            }
+            return ctx;
+        } catch (err) { logger.error(`Error validating pumps for restore: ${err.message}`); }
+    }
 
   public getPumpTypes() { return this.board.valueMaps.pumpTypes.toArray(); }
   public getCircuitUnits(pump?: Pump) {
@@ -1966,18 +1979,18 @@ export class PumpCommands extends BoardCommands {
       return this.board.valueMaps.pumpUnits.transform(val);
     }
   }
-  public async setPumpAsync(data: any): Promise<Pump> {
+  public async setPumpAsync(data: any, send: boolean = true): Promise<Pump> {
     try {
       let id = typeof data.id === 'undefined' ? -1 : parseInt(data.id, 10);
       if (id <= 0) id = sys.pumps.filter(elem => elem.master === 1).getMaxId(false, 49) + 1;
       data.id = id;
       if (isNaN(id)) return Promise.reject(new InvalidEquipmentIdError(`Invalid pump id: ${data.id}`, data.id, 'Pump'));
-      let pump = sys.pumps.getItemById(id, true);
+        let pump = sys.pumps.getItemById(id, true);
       await ncp.pumps.setPumpAsync(pump, data);
       let spump = state.pumps.getItemById(id, true);
       spump.emitData('pumpExt', spump.getExtended());
       spump.emitEquipmentChange();
-      return Promise.resolve(pump);
+      return pump;
     }
     catch (err) {
       logger.error(`Error setting pump: ${err}`);
@@ -2250,10 +2263,10 @@ export class CircuitCommands extends BoardCommands {
                         if (!remove) {
                             // Determine whether the spa heater is on.
                             for (let j = 0; j < spaStates.length; j++) {
-                                let hstatus = sys.board.valueMaps.heatStatus.getName(poolStates[j].heatStatus);
+                                let hstatus = sys.board.valueMaps.heatStatus.getName(spaStates[j].heatStatus);
                                 if (hstatus !== 'off' && hstatus !== 'solar') {
                                     // In this instance we may have a delay underway.
-                                    let hstate = state.heaters.find(x => x.bodyId === 1 && x.startupDelay === true && x.type.name !== 'solar');
+                                    let hstate = state.heaters.find(x => x.bodyId === 2 && x.startupDelay === true && x.type.name !== 'solar');
                                     bState = typeof hstate === 'undefined';
                                 }
                             }
@@ -2264,7 +2277,7 @@ export class CircuitCommands extends BoardCommands {
                         break;
                     case 'heater':
                         // If heater is on for any body
-                        // RSG 5-3-22: Heater will now refer to any poolHeat6er or spaHeater but not solar or other types.  anyHeater now takes that role.
+                        // RSG 5-3-22: Heater will now refer to any poolHeater or spaHeater but not solar or other types.  anyHeater now takes that role.
                         remove = true;
                         for (let j = 0; j < poolStates.length; j++) {
                             if (poolStates[j].heaterOptions.solar + poolStates[j].heaterOptions.heatpump > 0) remove = false;
@@ -2548,7 +2561,7 @@ export class CircuitCommands extends BoardCommands {
         await sys.board.circuits.setCircuitStateAsync(arrCircs[i].id, false);
         //proms.push(ncp.circuits.sendOnOffSequenceAsync(arrCircs[i].id, cmd.sequence));
       }
-      await utils.sleep(10000);
+      await setTimeout(10000);
       for (let i = 0; i < arrCircs.length; i++) {
         await sys.board.circuits.setCircuitStateAsync(arrCircs[i].id, true);
         //proms.push(ncp.circuits.sendOnOffSequenceAsync(arrCircs[i].id, cmd.sequence));
@@ -2583,7 +2596,7 @@ export class CircuitCommands extends BoardCommands {
                 let thm = sys.board.valueMaps.lightThemes.findItem(cmd.endingTheme);
                 if (typeof thm !== 'undefined') slight.lightingTheme = circ.lightingTheme = thm.val;
             }
-            //await utils.sleep(7000);
+            //await setTimeout(7000);
             //await sys.board.circuits.setCircuitStateAsync(circ.id, false);
             //await sys.board.circuits.setCircuitStateAsync(circ.id, true);
             slight.action = 0;
@@ -2695,7 +2708,7 @@ export class CircuitCommands extends BoardCommands {
     return cf;
   }
   public getCircuitNames() { return [...sys.board.valueMaps.circuitNames.toArray(), ...sys.board.valueMaps.customNames.toArray()]; }
-    public async setCircuitAsync(data: any): Promise<ICircuit> {
+    public async setCircuitAsync(data: any, send: boolean = true): Promise<ICircuit> {
         try {
             let id = parseInt(data.id, 10);
             if (id <= 0 || typeof data.id === 'undefined') {
@@ -2810,7 +2823,7 @@ export class CircuitCommands extends BoardCommands {
     });
 
   }
-  public async setLightGroupAsync(obj: any): Promise<LightGroup> {
+  public async setLightGroupAsync(obj: any, send: boolean = true): Promise<LightGroup> {
     let group: LightGroup = null;
     let id = typeof obj.id !== 'undefined' ? parseInt(obj.id, 10) : -1;
     if (id <= 0) {
@@ -2981,7 +2994,7 @@ export class CircuitCommands extends BoardCommands {
       if (nop > 0) {
         sgroup.action = nop;
         sgroup.emitEquipmentChange();
-        await utils.sleep(10000);
+        await setTimeout(10000);
         sgroup.action = 0;
         state.emitAllEquipmentChanges();
       }
@@ -3375,7 +3388,7 @@ export class ChlorinatorCommands extends BoardCommands {
     } catch (err) { logger.error(`Error validating chlorinators for restore: ${err.message}`); }
   }
 
-  public async setChlorAsync(obj: any): Promise<ChlorinatorState> {
+  public async setChlorAsync(obj: any, send: boolean = true): Promise<ChlorinatorState> {
     try {
       let id = parseInt(obj.id, 10);
       let chlor: Chlorinator;
@@ -3435,6 +3448,7 @@ export class ChlorinatorCommands extends BoardCommands {
         schlor.model = chlor.model = typeof obj.model !== 'undefined' ? sys.board.valueMaps.chlorinatorModel.encode(obj.model) : chlor.model;
         chlor.type = schlor.type = typeof obj.type !== 'undefined' ? sys.board.valueMaps.chlorinatorType.encode(obj.type) : chlor.type || 0;
         chlor.body = schlor.body = body.val;
+        chlor.address = typeof obj.address !== 'undefined' ? parseInt(obj.address,10) : 80;
         schlor.poolSetpoint = chlor.poolSetpoint = poolSetpoint;
         schlor.spaSetpoint = chlor.spaSetpoint = spaSetpoint;
         chlor.ignoreSaltReading = typeof obj.ignoreSaltReading !== 'undefined' ? utils.makeBool(obj.ignoreSaltReading) : utils.makeBool(chlor.ignoreSaltReading);
@@ -3603,16 +3617,16 @@ export class ScheduleCommands extends BoardCommands {
         // if scheduleDays includes today
         if (days.includes(state.time.toDate().getDay())) {
           if (sched.changeHeatSetpoint && (sched.heatSource as any).val !== sys.board.valueMaps.heatSources.getValue('off') && sched.heatSetpoint > 0 && sched.heatSetpoint !== tbody.setPoint) {
-            setTimeout(() => sys.board.bodies.setHeatSetpointAsync(cbody, sched.heatSetpoint), 100);
+            setTimeoutSync(() => sys.board.bodies.setHeatSetpointAsync(cbody, sched.heatSetpoint), 100);
           }
           if ((sched.heatSource as any).val !== sys.board.valueMaps.heatSources.getValue('nochange') && sched.heatSource !== tbody.heatMode) {
-            setTimeout(() => sys.board.bodies.setHeatModeAsync(cbody, sys.board.valueMaps.heatModes.getValue((sched.heatSource as any).name)), 100);
+            setTimeoutSync(() => sys.board.bodies.setHeatModeAsync(cbody, sys.board.valueMaps.heatModes.getValue((sched.heatSource as any).name)), 100);
           }
         }
       }
     };
   }
-  public async setScheduleAsync(data: any): Promise<Schedule> {
+  public async setScheduleAsync(data: any, send: boolean = true): Promise<Schedule> {
     let id = typeof data.id === 'undefined' ? -1 : parseInt(data.id, 10);
     if (id <= 0) id = sys.schedules.getNextEquipmentId(new EquipmentIdRange(1, sys.equipment.maxSchedules));
     if (isNaN(id)) return Promise.reject(new InvalidEquipmentIdError(`Invalid schedule id: ${data.id}`, data.id, 'Schedule'));
@@ -3723,7 +3737,7 @@ export class ScheduleCommands extends BoardCommands {
       }
     } catch (err) { logger.error(`Error synchronizing schedule states`); }
   }
-  public async setEggTimerAsync(data?: any): Promise<EggTimer> { return Promise.resolve(sys.eggTimers.getItemByIndex(1)); }
+  public async setEggTimerAsync(data?: any, send: boolean = true): Promise<EggTimer> { return Promise.resolve(sys.eggTimers.getItemByIndex(1)); }
   public async deleteEggTimerAsync(data?: any): Promise<EggTimer> { return Promise.resolve(sys.eggTimers.getItemByIndex(1)); }
   public includesCircuit(sched: Schedule, circuit: number) {
     let bIncludes = false;
@@ -4005,7 +4019,7 @@ export class HeaterCommands extends BoardCommands {
                 heater[s] = obj[s];
         }
     }
-    public async setHeaterAsync(obj: any): Promise<Heater> {
+    public async setHeaterAsync(obj: any, send: boolean = true): Promise<Heater> {
         try {
             let id = typeof obj.id === 'undefined' ? -1 : parseInt(obj.id, 10);
             if (isNaN(id)) return Promise.reject(new InvalidEquipmentIdError('Heater Id is not valid.', obj.id, 'Heater'));
@@ -4053,7 +4067,6 @@ export class HeaterCommands extends BoardCommands {
         let solarInstalled = htypes.solar > 0;
         let heatPumpInstalled = htypes.heatpump > 0;
         let gasHeaterInstalled = htypes.gas > 0;
-
         if (sys.heaters.length > 0) sys.board.valueMaps.heatSources = new byteValueMap([[0, { name: 'off', desc: 'Off' }]]);
         if (gasHeaterInstalled) sys.board.valueMaps.heatSources.set(3, { name: 'heater', desc: 'Heater' });
         if (solarInstalled && (gasHeaterInstalled || heatPumpInstalled)) sys.board.valueMaps.heatSources.merge([[5, { name: 'solar', desc: 'Solar Only' }], [21, { name: 'solarpref', desc: 'Solar Preferred' }]]);
@@ -4073,6 +4086,7 @@ export class HeaterCommands extends BoardCommands {
             let body = sys.bodies.getItemByIndex(i);
             let btemp = state.temps.bodies.getItemById(body.id, body.isActive !== false);
             let opts = sys.board.heaters.getInstalledHeaterTypes(body.id);
+            
             btemp.heaterOptions = opts;
         }
         this.setActiveTempSensors();
@@ -4544,7 +4558,7 @@ export class ValveCommands extends BoardCommands {
     else
       vstate.isDiverted = isDiverted;
   }
-  public async setValveAsync(obj: any): Promise<Valve> {
+  public async setValveAsync(obj: any, send: boolean = true): Promise<Valve> {
     try {
       let id = typeof obj.id !== 'undefined' ? parseInt(obj.id, 10) : -1;
       obj.master = 1;
@@ -4986,7 +5000,7 @@ export class ChemControllerCommands extends BoardCommands {
     if (!isNaN(id)) return sys.chemControllers.find(x => x.id === id);
     else if (!isNaN(address)) return sys.chemControllers.find(x => x.address === address);
   }
-  public async setChemControllerAsync(data: any): Promise<ChemController> {
+  public async setChemControllerAsync(data: any, send: boolean = true): Promise<ChemController> {
     // The following are the rules related to when an OCP is present.
     // ==============================================================
     // 1. IntelliChem cannot be controlled/polled via Nixie, since there is no enable/disable from the OCP at this point we don't know who is in control of polling.
@@ -4997,8 +5011,9 @@ export class ChemControllerCommands extends BoardCommands {
     // =============================================================
     // 1. All chemControllers will be controlled via Nixie (IntelliChem, REM Chem).
     try {
+      // let c1 = sys.chemControllers.getItemById(1);
       let chem = sys.board.chemControllers.findChemController(data);
-      let isAdd = typeof chem === 'undefined';
+      let isAdd = typeof chem === 'undefined' || typeof chem.isActive === 'undefined';
       let type = sys.board.valueMaps.chemControllerTypes.encode(isAdd ? data.type : chem.type);
       if (typeof type === 'undefined') return Promise.reject(new InvalidEquipmentDataError(`The chem controller type could not be determined ${data.type || type}`, 'chemController', type));
       if (isAdd && sys.equipment.maxChemControllers <= sys.chemControllers.length) return Promise.reject(new InvalidEquipmentDataError(`The maximum number of chem controllers have been added to your controller`, 'chemController', sys.equipment.maxChemControllers));

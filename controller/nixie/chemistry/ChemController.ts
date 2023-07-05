@@ -345,7 +345,6 @@ export class NixieIntelliChemController extends NixieChemControllerBase {
     }
     public async sendConfig(schem: ChemControllerState): Promise<boolean> {
         try {
-            return await new Promise<boolean>((resolve, reject) => {
                 this.configSent = false;
                 let out = Outbound.create({
                     protocol: Protocol.IntelliChem,
@@ -355,16 +354,7 @@ export class NixieIntelliChemController extends NixieChemControllerBase {
                     payload: [],
                     retries: 3, // We are going to try 4 times.
                     response: Response.create({ protocol: Protocol.IntelliChem, action: 1 }),
-                    onAbort: () => { },
-                    onComplete: (err) => {
-                        if (err) {
-                            resolve(false);
-                        }
-                        else {
-                            this.configSent = true;
-                            resolve(true);
-                        }
-                    }
+                    onAbort: () => { }
                 });
                 out.insertPayloadBytes(0, 0, 21);
                 out.setPayloadByte(0, Math.floor((this.chem.ph.setpoint * 100) / 256) || 0);
@@ -379,15 +369,15 @@ export class NixieIntelliChemController extends NixieChemControllerBase {
                 out.setPayloadByte(10, Math.floor(this.chem.alkalinity / 256) || 0);
                 out.setPayloadByte(12, Math.round(this.chem.alkalinity % 256) || 0);
                 logger.verbose(`Nixie: ${this.chem.name} sending IntelliChem settings action 146`);
-                conn.queueSendMessage(out);
-            });
+                out.sendAsync();
+                this.configSent = true;
+                return true;
         }
         catch (err) { logger.error(`Error updating IntelliChem: ${err.message}`); }
     }
     public async requestStatus(schem: ChemControllerState): Promise<boolean> {
         try {
             schem.type = 2;
-            let success = await new Promise<boolean>((resolve, reject) => {
                 let out = Outbound.create({
                     protocol: Protocol.IntelliChem,
                     source: 16,
@@ -396,21 +386,17 @@ export class NixieIntelliChemController extends NixieChemControllerBase {
                     payload: [210],
                     retries: 3, // We are going to try 4 times.
                     response: Response.create({ protocol: Protocol.IntelliChem, action: 18 }),
-                    onAbort: () => { },
-                    onComplete: (err) => {
-                        if (err) {
-                            // If the IntelliChem is not responding we need to store that off.  If an 18 does
-                            // come across this will be cleared by the processing of that message.
-                            schem.alarms.comms = sys.board.valueMaps.chemControllerStatus.encode('nocomms');
-                            resolve(false);
-                        }
-                        else { resolve(true); }
-                    }
+                    onAbort: () => { }
                 });
-                conn.queueSendMessage(out);
-            });
-            return success;
-        } catch (err) { logger.error(`Communication error with IntelliChem : ${err.message}`); }
+                await out.sendAsync();
+            return true;
+        } catch (err) { 
+            // If the IntelliChem is not responding we need to store that off.  If an 18 does
+            // come across this will be cleared by the processing of that message.
+            schem.alarms.comms = sys.board.valueMaps.chemControllerStatus.encode('nocomms');
+            logger.error(`Communication error with IntelliChem : ${err.message}`); 
+            return false;
+        }
     }
     public async closeAsync() {
         try {
@@ -596,7 +582,7 @@ export class NixieChemController extends NixieChemControllerBase {
             await this.orp.setORPAsync(schem.orp, data.orp);
             // Ph Settings
             await this.ph.setPhAsync(schem.ph, data.ph);
-            await this.processAlarms(schem);
+            this.processAlarms(schem);
         }
         catch (err) { logger.error(`setControllerAsync: ${err.message}`); return Promise.reject(err); }
         finally { this.suspendPolling = false; }
@@ -713,7 +699,6 @@ export class NixieChemController extends NixieChemControllerBase {
             schem.ph.enabled = this.chem.ph.enabled;
             let probeType = chem.orp.probe.type;
             if (this.chem.orp.enabled) {
-
                 let useChlorinator = chem.orp.useChlorinator;
                 let pumpType = chem.orp.pump.type;
                 let currLevelPercent = schem.orp.tank.level / schem.orp.tank.capacity * 100;
@@ -787,7 +772,6 @@ export class NixieChemController extends NixieChemControllerBase {
                 else schem.alarms.pH = 0;
                 schem.ph.freezeProtect = (state.freeze && chem.ph.disableOnFreeze && schem.isBodyOn);
             }
-
             else {
                 schem.alarms.pHTank = 0;
                 schem.warnings.pHDailyLimitReached = 0;
@@ -1144,10 +1128,10 @@ export class NixieChemTank extends NixieChildEquipment {
         try {
             if (typeof data !== 'undefined') {
                 stank.level = typeof data.level !== 'undefined' ? parseFloat(data.level) : stank.level;
-                stank.capacity = this.tank.capacity = typeof data.capacity !== 'undefined' ? parseFloat(data.capacity) : stank.capacity;
+                stank.capacity = this.tank.capacity = typeof data.capacity !== 'undefined' ? parseFloat(data.capacity) : this.tank.capacity;
                 stank.units = this.tank.units = typeof data.units !== 'undefined' ? sys.board.valueMaps.volumeUnits.encode(data.units) : this.tank.units;
-                stank.alarmEmptyEnabled = this.tank.alarmEmptyEnabled = typeof data.alarmEmptyEnabled !== 'undefined' ? data.alarmEmptyEnabled : stank.alarmEmptyEnabled;
-                stank.alarmEmptyLevel = this.tank.alarmEmptyLevel = typeof data.alarmEmptyLevel !== 'undefined' ? data.alarmEmptyLevel : stank.alarmEmptyLevel;
+                stank.alarmEmptyEnabled = this.tank.alarmEmptyEnabled = typeof data.alarmEmptyEnabled !== 'undefined' ? data.alarmEmptyEnabled : this.tank.alarmEmptyEnabled;
+                stank.alarmEmptyLevel = this.tank.alarmEmptyLevel = typeof data.alarmEmptyLevel !== 'undefined' ? data.alarmEmptyLevel : this.tank.alarmEmptyLevel;
             }
         }
         catch (err) { logger.error(`setTankAsync: ${err.message}`); return Promise.reject(err); }
@@ -1384,8 +1368,7 @@ export class NixieChemPump extends NixieChildEquipment {
                         await self.dose(schem);
                     }
                     catch (err) {
-                        logger.error(`self.dose error in finally:`);
-                        logger.error(err);
+                        logger.error(`self.dose error in finally: ${err.message}`);
                         //return Promise.reject(err); // this isn't a promise we should be returning
                     }
                 }, 1000);
@@ -1397,8 +1380,7 @@ export class NixieChemPump extends NixieChildEquipment {
                         await this.chemical.cancelDosing(schem, 'completed');
                     }
                     catch (err) {
-                        logger.error(`this.chemical.cancelDosing error in finally:`);
-                        logger.error(err);
+                        logger.error(`this.chemical.cancelDosing error in finally: ${err.message}`);
                     }
                     schem.pump.isDosing = this.isOn = false;
                     schem.manualDosing = false;
@@ -1552,7 +1534,7 @@ export class NixieChemChlor extends NixieChildEquipment {
                 this._dosingTimer = setTimeout(async () => {
                     try { await self.dose(schem); }
                     catch (err) {
-                        logger.error(err);
+                        logger.error(`Chem dosing error: ${err.message}`);
                         // return Promise.reject(err); // should not be returning a promise in a finally 
                     }
                 }, 1000);
@@ -1832,7 +1814,7 @@ export class NixieChemicalPh extends NixieChemical {
                 }
             }
         }
-        catch (err) { logger.error(err); return Promise.reject(err); }
+        catch (err) { logger.error(`Error checking for dosing: ${err.message}`); return Promise.reject(err); }
         finally {
             logger.debug(`End check ${sph.chemType} dosing status = ${sys.board.valueMaps.chemControllerDosingStatus.getName(sph.dosingStatus)}`);
         }
@@ -1884,7 +1866,7 @@ export class NixieChemicalPh extends NixieChemical {
             logger.verbose(`Chem acid manual calibration dose activate pump`);
             await this.pump.dose(sph);
         }
-        catch (err) { logger.error(`calibrateDoseAsync: ${err.message}`); logger.error(err); return Promise.reject(err); }
+        catch (err) { logger.error(`calibrateDoseAsync: ${err.message}`); return Promise.reject(err); }
     }
     public async manualDoseVolumeAsync(sph: ChemicalPhState, volume: number) {
         try {
@@ -1917,7 +1899,7 @@ export class NixieChemicalPh extends NixieChemical {
                 await this.pump.dose(sph);
             }
         }
-        catch (err) { logger.error(`manualDoseVolumeAsync: ${err.message}`); logger.error(err); return Promise.reject(err); }
+        catch (err) { logger.error(`manualDoseVolumeAsync: ${err.message}`); return Promise.reject(err); }
     }
     public async initDose(sph: ChemicalPhState) {
         try {
@@ -2038,7 +2020,7 @@ export class NixieChemicalORP extends NixieChemical {
                 await this.pump.dose(sorp);
             }
         }
-        catch (err) { logger.error(`manualDoseVolumeAsync ORP: ${err.message}`); logger.error(err); return Promise.reject(err); }
+        catch (err) { logger.error(`manualDoseVolumeAsync ORP: ${err.message}`); return Promise.reject(err); }
     }
     public async calibrateDoseAsync(sorp: ChemicalORPState, time: number) {
         try {
@@ -2069,7 +2051,7 @@ export class NixieChemicalORP extends NixieChemical {
             logger.verbose(`Chem acid manual dose activate pump ${this.pump.pump.ratedFlow}mL/min`);
             await this.pump.dose(sorp);
         }
-        catch (err) { logger.error(`calibrateDoseAsync: ${err.message}`); logger.error(err); return Promise.reject(err); }
+        catch (err) { logger.error(`calibrateDoseAsync: ${err.message}`); return Promise.reject(err); }
     }
 
     public async cancelDosing(sorp: ChemicalORPState, reason: string): Promise<void> {
