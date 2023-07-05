@@ -1,10 +1,11 @@
 ﻿{
   "controller": {
     "comms": {
+      "type": "local",
       "portId": 0,
       "enabled": true,
       "rs485Port": "/dev/ttyUSB0",
-      "mockPort": false,
+      "mock": false,
       "netConnect": false,
       "netHost": "raspberrypi",
       "netPort": 9801,
@@ -14,9 +15,19 @@
         "dataBits": 8,
         "parity": "none",
         "stopBits": 1,
-        "flowControl": false,
+        "rtscts": false,
         "autoOpen": false,
         "lock": false
+      },
+      "netSettings": {
+        "allowHalfOpen": false,
+        "keepAlive": false,
+        "keepAliveInitialDelay": 5
+      },
+      "screenlogic": {
+        "connectionType": "local",
+        "systemName": "Pentair: 00-00-00",
+        "password": 1234
       }
     },
     "backups": {
@@ -29,7 +40,6 @@
       "njsPC":  true,
       "servers": []
     }
-
   },
   "web": {
     "servers": {
@@ -154,7 +164,7 @@
           "username": "",
           "password": "",
           "selfSignedCertificate": false,
-          "rootTopic": "@bind=(state.equipment.model).replace(' ','-').replace('/','').toLowerCase();",
+          "rootTopic": "@bind=(state.equipment.model).replace(/ /g,'-').replace('/','').toLowerCase();",
           "retain": true,
           "qos": 0,
           "changesOnly": true
@@ -194,7 +204,7 @@
           "port": 1883,
           "username": "",
           "password": "",
-          "rootTopic": "@bind=(state.equipment.model).replace(' ','-').replace('/','').toLowerCase();Alt",
+          "rootTopic": "@bind=(state.equipment.model).replace(/ /,'-').replace('/','').toLowerCase();Alt",
           "retain": true,
           "qos": 0,
           "changesOnly": true
@@ -220,7 +230,7 @@
         "vars": {
           "_note": "hassTopic is the topic that HASS reads for configuration and should not be changed.  mqttTopic should match the topic in the MQTT binding (do not use MQTTAlt for HASS).",
           "hassTopic": "homeassistant",
-          "mqttTopic": "@bind=(state.equipment.model).replace(' ','-').replace('/','').toLowerCase();"
+          "mqttTopic": "@bind=(state.equipment.model).replace(/ /g,'-').replace('/','').toLowerCase();"
         }
       },
       "rem": {
@@ -248,10 +258,15 @@
     }
   },
   "log": {
-    "packet": {
+    "screenlogic": {
       "enabled": false,
       "logToConsole": false,
+      "logToFile": false
+    },
+    "packet": {
+      "logToConsole": false,
       "logToFile": false,
+      "enabled": false,
       "filename": "packetLog",
       "invalid": true,
       "broadcast": {

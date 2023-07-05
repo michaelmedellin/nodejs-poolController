@@ -1,5 +1,6 @@
 ﻿/*  nodejs-poolController.  An application to control pool equipment.
-Copyright (C) 2016, 2017, 2018, 2019, 2020.  Russell Goldin, tagyoureit.  russ.goldin@gmail.com
+Copyright (C) 2016, 2017, 2018, 2019, 2020, 2021, 2022.  
+Russell Goldin, tagyoureit.  russ.goldin@gmail.com
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as
@@ -134,6 +135,21 @@ export class ManualPriorityDelay extends EquipmentDelay {
         logger.info(`Manual Operation Priority cancelled for ${this.circuitState.name}`);
         this._delayTimer = undefined;
         this.circuitState.manualPriorityActive = false;
+        // Rip through all the schedules and clear the manual priority.
+        let sscheds = state.schedules.getActiveSchedules();
+        let circIds = [];
+        for (let i = 0; i < sscheds.length; i++) {
+            let ssched = sscheds[i];
+            ssched.manualPriorityActive = false;
+            if (!circIds.includes(ssched.circuit)) circIds.push(ssched.circuit);
+        }
+        for (let i = 0; i < circIds.length; i++) {
+            let circ = sys.circuits.getInterfaceById(circIds[i]);
+            if (!circ.isActive) continue;
+            let cstate = state.circuits.getInterfaceById(circ.id);
+            sys.board.circuits.setEndTime(circ, cstate, cstate.isOn, true);
+        }
+
         delayMgr.deleteDelay(this.id);
     }
     public clearDelay() {

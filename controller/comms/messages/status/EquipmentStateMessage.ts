@@ -1,5 +1,6 @@
 /*  nodejs-poolController.  An application to control pool equipment.
-Copyright (C) 2016, 2017, 2018, 2019, 2020.  Russell Goldin, tagyoureit.  russ.goldin@gmail.com
+Copyright (C) 2016, 2017, 2018, 2019, 2020, 2021, 2022.  
+Russell Goldin, tagyoureit.  russ.goldin@gmail.com
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as
@@ -120,8 +121,12 @@ export class EquipmentStateMessage {
             // Start over because we didn't have communication before but we now do.  This will fall into the if
             // below so that it goes through the intialization process.  In this case we didn't see an OCP when we started
             // but there clearly is one now.
-            sys.controllerType = ControllerType.Unknown;
-            state.status = 0;
+            (async () => {
+                await sys.board.closeAsync();
+                logger.info(`Closed ${sys.controllerType} board`);
+                sys.controllerType = ControllerType.Unknown;
+                state.status = 0;
+            })();
         }
         if (!state.isInitialized) {
             msg.isProcessed = true;
@@ -591,9 +596,9 @@ export class EquipmentStateMessage {
             case 204: // IntelliCenter only.
                 state.batteryVoltage = msg.extractPayloadByte(2) / 50;
                 state.comms.keepAlives = msg.extractPayloadInt(4);
-                state.time.date = msg.extractPayloadByte(6);
-                state.time.month = msg.extractPayloadByte(7);
                 state.time.year = msg.extractPayloadByte(8);
+                state.time.month = msg.extractPayloadByte(7);
+                state.time.date = msg.extractPayloadByte(6);
                 sys.equipment.controllerFirmware = (msg.extractPayloadByte(42) + (msg.extractPayloadByte(43) / 1000)).toString();
                 if (sys.chlorinators.length > 0) {
                     if (msg.extractPayloadByte(37, 255) !== 255) {
@@ -636,6 +641,7 @@ export class EquipmentStateMessage {
                     scover2.name = cover2.name;
                     state.temps.bodies.getItemById(cover2.body + 1).isCovered = scover2.isClosed = (msg.extractPayloadByte(30) & 0x0002) > 0;
                 }
+                sys.board.schedules.syncScheduleStates();
                 msg.isProcessed = true;
                 state.emitEquipmentChanges();
                 break;

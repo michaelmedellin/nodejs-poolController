@@ -1,5 +1,6 @@
 /*  nodejs-poolController.  An application to control pool equipment.
-Copyright (C) 2016, 2017, 2018, 2019, 2020.  Russell Goldin, tagyoureit.  russ.goldin@gmail.com
+Copyright (C) 2016, 2017, 2018, 2019, 2020, 2021, 2022.  
+Russell Goldin, tagyoureit.  russ.goldin@gmail.com
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as
@@ -102,7 +103,7 @@ export class UtilitiesRoute {
                             options: {
                                 protocol: 'mqtt://', host: '', port: 1883, username: '', password: '',
                                 selfSignedCertificate: false,
-                                rootTopic: "pool/@bind=(state.equipment.model).replace(' ','-').replace(' / ','').toLowerCase();",
+                                rootTopic: "pool/@bind=(state.equipment.model).replace(/ /g,'-').replace(' / ','').toLowerCase();",
                                 retain: true, qos: 0, changesOnly: true
                             }
                         }
@@ -222,7 +223,7 @@ export class UtilitiesRoute {
                     } catch (e) {
                         err = new ServiceProcessError(`Error uploading file: ${e.message}`, 'POST: app/backup/file', 'uploadFile');
                         next(err);
-                        logger.error(e);
+                        logger.error(`File upload error: ${e.message}`);
                     }
                 });
             } catch (err) { next(err); }

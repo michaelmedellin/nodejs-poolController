@@ -5,11 +5,12 @@ import { logger } from '../../../logger/Logger';
 import { NixieEquipment, NixieChildEquipment, NixieEquipmentCollection, INixieControlPanel } from "../NixieEquipment";
 import { Pump, PumpCircuit, PumpCollection, PumpRelay, sys } from "../../../controller/Equipment";
 import { CircuitState, PumpState, state, } from "../../State";
-import { setTimeout, clearTimeout } from 'timers';
+import { setTimeout as setTimeoutSync, clearTimeout } from 'timers';
 import { NixieControlPanel } from '../Nixie';
 import { webApp, InterfaceServerResponse } from "../../../web/Server";
 import { Outbound, Protocol, Response } from '../../comms/messages/Messages';
 import { conn } from '../../comms/Comms';
+import { setTimeout } from 'timers/promises';
 
 export class NixiePumpCollection extends NixieEquipmentCollection<NixiePump> {
     public async deletePumpAsync(id: number) {
@@ -64,11 +65,13 @@ export class NixiePumpCollection extends NixieEquipmentCollection<NixiePump> {
             for (let i = 0; i < pumps.length; i++) {
                 let pump = pumps.getItemByIndex(i);
                 if (pump.master === 1) {
-                    if (typeof this.find(elem => elem.id === pump.id) === 'undefined') {
+                    let p: NixiePump = this.find(elem => elem.id === pump.id) as NixiePump;
+                    if (typeof p === 'undefined') {
                         let type = sys.board.valueMaps.pumpTypes.getName(pump.type);
                         let npump = this.pumpFactory(pump);
                         logger.info(`Initializing Nixie Pump ${npump.id}-${pump.name}`);
                         this.push(npump);
+                        await npump.initAsync();
                     }
                 }
             }
@@ -79,7 +82,9 @@ export class NixiePumpCollection extends NixieEquipmentCollection<NixiePump> {
         try {
             for (let i = this.length - 1; i >= 0; i--) {
                 try {
-                    await this[i].closeAsync();
+                    try {
+                        await this[i].closeAsync();
+                    } catch (err) { logger.error(`Error attempting to close pump ${this[i].id}`); }
                     this.splice(i, 1);
                 } catch (err) { logger.error(`Error stopping Nixie Pump ${err}`); }
             }
@@ -99,14 +104,16 @@ export class NixiePumpCollection extends NixieEquipmentCollection<NixiePump> {
         try {
             let c: NixiePump = this.find(elem => elem.id === pump.id) as NixiePump;
             if (pump.master === 1) {
-                // if pump exists, close it so we can re-init 
+                // if pump exists, close it so we can re-init
                 // (EG if pump type changes, we need to setup a new instance of the pump)
                 if (typeof c !== 'undefined' && c.pump.type !== pump.type) {
                     await c.closeAsync();
+                    await this.deletePumpAsync(pump.id);
                     c = this.pumpFactory(pump);
+                    this.push(c);
                 }
-                logger.info(`Initializing Nixie Pump ${c.id}-${pump.name}`);
-                this.push(c);
+                logger.info(`Initializing Existing Nixie Pump ${c.id}-${pump.name}`);
+
             }
             return c;
         } catch (err) { return Promise.reject(logger.error(`Nixie Controller: initPumpAsync Error: ${err.message}`)); }
@@ -138,13 +145,21 @@ export class NixiePumpCollection extends NixieEquipmentCollection<NixiePump> {
         // loop through all pumps and update rates based on circuit changes
         // this would happen in <2s anyway based on pollAsync but this is immediate.
         for (let i = this.length - 1; i >= 0; i--) {
-            setTimeout(async () => {
+            let pump = this[i] as NixiePump;
+            if (!pump.suspendPolling) setTimeoutSync(async () => { await pump.pollEquipmentAsync(); }, 100);
+            else {
+                pump.setTargetSpeed(state.pumps.getItemById(pump.id));
+            }
+            // RKS: 05-16-23 - Below backs up the processing.
+            /*
+             
+            setTimeoutSync(async () => {
                 let pump = this[i] as NixiePump;
                 try {
                     if (!pump.closing) await pump.pollEquipmentAsync();
                 } catch (err) { }
             }, 100);
-
+            */
         }
     }
 }
@@ -155,7 +170,10 @@ export class NixiePump extends NixieEquipment {
     protected _targetSpeed: number;
     protected _suspendPolling = 0;
     public get suspendPolling(): boolean { return this._suspendPolling > 0; }
-    public set suspendPolling(val: boolean) { this._suspendPolling = Math.max(0, this._suspendPolling + (val ? 1 : -1)); }
+    public set suspendPolling(val: boolean) {
+        this._suspendPolling = Math.max(0, this._suspendPolling + (val ? 1 : -1));
+        if (this._suspendPolling > 1) console.log(`Suspend Polling ${this._suspendPolling}`);
+    }
     public closing = false;
     public async setServiceModeAsync() {
         let pstate = state.pumps.getItemById(this.pump.id);
@@ -171,6 +189,14 @@ export class NixiePump extends NixieEquipment {
         super(ncp);
         this.pump = pump;
         this._targetSpeed = 0;
+    }
+    public async initAsync() {
+        if (this._pollTimer) {
+            clearTimeout(this._pollTimer);
+            this._pollTimer = undefined;
+        }
+        this.closing = false;
+        this._suspendPolling = 0;
         this.pollEquipmentAsync();
     }
     public get id(): number { return typeof this.pump !== 'undefined' ? this.pump.id : -1; }
@@ -182,7 +208,6 @@ export class NixiePump extends NixieEquipment {
     }
     public async setPumpAsync(data: any): Promise<InterfaceServerResponse> {
         try {
-
             this.pump.master = 1;
             // if (typeof data.isVirtual !== 'undefined') this.pump.isVirtual = data.isVirtual;
             this.pump.isActive = true;
@@ -216,7 +241,7 @@ export class NixiePump extends NixieEquipment {
                         case 'ds':
                         case 'sf':
                         case 'hwrly':
-                            c.units = 'undefined';
+                            c.units = undefined;
                             break;
                     }
                     if (isNaN(units)) units = typeof cd !== 'undefined' ? cd.units : sys.board.valueMaps.pumpUnits.getValue('rpm');
@@ -235,6 +260,7 @@ export class NixiePump extends NixieEquipment {
                         c.relay = relay;
                 }
             }
+            else data.circuits = [];
             this.pump.set(data); // Sets all the data back to the pump.  This also sets the relays should it exist on the data.
             let spump = state.pumps.getItemById(this.pump.id, true);
             spump.name = this.pump.name;
@@ -243,6 +269,7 @@ export class NixiePump extends NixieEquipment {
             sys.pumps.sortById();
             state.pumps.sortById();
             this.pump.hasChanged = true;
+            this.pollEquipmentAsync();
             return Promise.resolve(new InterfaceServerResponse(200, 'Ok'));
         }
         catch (err) { logger.error(`Nixie setPumpAsync: ${err.message}`); return Promise.reject(err); }
@@ -250,16 +277,22 @@ export class NixiePump extends NixieEquipment {
     public async pollEquipmentAsync() {
         let self = this;
         try {
-            if (this.suspendPolling || this.closing) return;
+            // RSG 8-2022.  Refactored to add initasync.  With this.pollEquipmentAsync inside the
+            // constructor we could get here before the pump is initialized.  The added check
+            // for the 112 address prevented that previously, but now is just a final fail safe.
             if (typeof this._pollTimer !== 'undefined' || this._pollTimer) clearTimeout(this._pollTimer);
             this._pollTimer = null;
-            // let success = false;
+            if (this.suspendPolling || this.closing || this.pump.address > 112) {
+                if (this.suspendPolling) logger.info(`Pump ${this.id} Polling Suspended`);
+                if (this.closing) logger.info(`Pump ${this.id} is closing`);
+                return;
+            }
             let pstate = state.pumps.getItemById(this.pump.id);
             this.setTargetSpeed(pstate);
             await this.setPumpStateAsync(pstate);
         }
         catch (err) { logger.error(`Nixie Error running pump sequence - ${err}`); }
-        finally { if (!this.closing) this._pollTimer = setTimeout(async () => await self.pollEquipmentAsync(), this.pollingInterval || 2000); }
+        finally { if (!self.closing) this._pollTimer = setTimeoutSync(async () => await self.pollEquipmentAsync(), self.pollingInterval || 2000); }
     }
     private async checkHardwareStatusAsync(connectionId: string, deviceBinding: string) {
         try {
@@ -290,7 +323,7 @@ export class NixiePump extends NixieEquipment {
         catch (err) { logger.error(`Nixie Pump closeAsync: ${err.message}`); return Promise.reject(err); }
     }
     public logData(filename: string, data: any) { this.controlPanel.logData(filename, data); }
-    protected setTargetSpeed(pstate: PumpState) { };
+    public setTargetSpeed(pstate: PumpState) { };
     protected isBodyOn(bodyCode: number) {
         let assoc = sys.board.valueMaps.pumpBodies.transform(bodyCode);
         switch (assoc.name) {
@@ -511,7 +544,7 @@ export class NixiePumpRS485 extends NixiePump {
     public async setServiceModeAsync() {
         this._targetSpeed = 0;
         await this.setDriveStateAsync(false);
-        await this.setPumpToRemoteControl(false);
+        await this.setPumpToRemoteControlAsync(false);
     }
     public async setPumpStateAsync(pstate: PumpState) {
         // Don't poll while we are seting the state.
@@ -521,17 +554,16 @@ export class NixiePumpRS485 extends NixiePump {
             if (state.mode === 0) {
                 // Since these process are async the closing flag can be set
                 // between calls.  We need to check it in between each call.
-                try { if (!this.closing) await this.setDriveStateAsync(); } catch (err) { }
-                try {
-                    if (!this.closing) {
-                        if (this._targetSpeed >= pt.minFlow && this._targetSpeed <= pt.maxFlow) await this.setPumpGPMAsync();
-                        else if (this._targetSpeed >= pt.minSpeed && this._targetSpeed <= pt.maxSpeed) await this.setPumpRPMAsync();
-                    }
-                } catch (err) { };
-                try { if (!this.closing && pt.name !== 'vsf' && pt.name !== 'vs') await this.setPumpFeature(6); } catch (err) { };
-                try { if (!this.closing) await utils.sleep(1000); } catch (err) { };
-                try { if (!this.closing) await this.requestPumpStatus(); } catch (err) { };
-                try { if (!this.closing) await this.setPumpToRemoteControl(); } catch (err) { };
+                if (!this.closing) await this.setDriveStateAsync();
+                if (!this.closing) {
+                    if (this._targetSpeed >= pt.minFlow && this._targetSpeed <= pt.maxFlow) await this.setPumpGPMAsync();
+                    else if (this._targetSpeed >= pt.minSpeed && this._targetSpeed <= pt.maxSpeed) await this.setPumpRPMAsync();
+                }
+                ;
+                if (!this.closing && pt.name !== 'vsf' && pt.name !== 'vs') await this.setPumpFeatureAsync(6);;
+                if (!this.closing) await setTimeout(1000);;
+                if (!this.closing) await this.requestPumpStatusAsync();;
+                if (!this.closing) await this.setPumpToRemoteControlAsync();;
             }
             return new InterfaceServerResponse(200, 'Success');
         }
@@ -542,7 +574,7 @@ export class NixiePumpRS485 extends NixiePump {
         finally { this.suspendPolling = false; }
     };
     protected async setDriveStateAsync(running: boolean = true) {
-        return new Promise<void>((resolve, reject) => {
+        try {
             if (conn.isPortEnabled(this.pump.portId || 0)) {
                 let out = Outbound.create({
                     portId: this.pump.portId || 0,
@@ -551,76 +583,66 @@ export class NixiePumpRS485 extends NixiePump {
                     action: 6,
                     payload: running && this._targetSpeed > 0 ? [10] : [4],
                     retries: 1,
-                    response: true,
-                    onComplete: (err, msg: Outbound) => {
-                        if (err) {
-                            logger.error(`Error sending setDriveState for ${this.pump.name} : ${err.message}`);
-                            reject(err);
-                        }
-                        else resolve();
-                    }
+                    response: true
                 });
-                conn.queueSendMessage(out);
+                try {
+                    await out.sendAsync();
+                }
+                catch (err) {
+                    logger.error(`Error sending setDriveState for ${this.pump.name}: ${err.message}`);
+                }
             }
             else {
                 let pstate = state.pumps.getItemById(this.pump.id);
                 pstate.command = pstate.rpm > 0 || pstate.flow > 0 ? 10 : 0;
-                resolve();
             }
-        });
+        } catch (err) { logger.error(`Error setting driveState for ${this.pump.name}: ${err.message}`); }
     };
-    protected async requestPumpStatus() {
+    protected async requestPumpStatusAsync() {
         if (conn.isPortEnabled(this.pump.portId || 0)) {
-            return new Promise<void>((resolve, reject) => {
-                let out = Outbound.create({
-                    portId: this.pump.portId || 0,
-                    protocol: Protocol.Pump,
-                    dest: this.pump.address,
-                    action: 7,
-                    payload: [],
-                    retries: 2,
-                    response: true,
-                    onComplete: (err, msg) => {
-                        if (err) {
-                            logger.error(`Error sending requestPumpStatus for ${this.pump.name}: ${err.message}`);
-                            reject(err);
-                        }
-                        else resolve();
-                    }
-                });
-                conn.queueSendMessage(out);
+            let out = Outbound.create({
+                portId: this.pump.portId || 0,
+                protocol: Protocol.Pump,
+                dest: this.pump.address,
+                action: 7,
+                payload: [],
+                retries: 2,
+                response: true,
             });
+            try {
+                await out.sendAsync();
+            }
+            catch (err) {
+                logger.error(`Error sending requestPumpStatus for ${this.pump.name}: ${err.message}`);
+            }
         }
     };
-    protected setPumpToRemoteControl(running: boolean = true) {
-        if (conn.isPortEnabled(this.pump.portId || 0)) {
-            return new Promise<void>((resolve, reject) => {
+    protected async setPumpToRemoteControlAsync(running: boolean = true) {
+        try {
+            if (conn.isPortEnabled(this.pump.portId || 0)) {
                 let out = Outbound.create({
                     portId: this.pump.portId || 0,
                     protocol: Protocol.Pump,
                     dest: this.pump.address,
                     action: 4,
                     payload: running ? [255] : [0], // when stopAsync is called, pass false to return control to pump panel
-                    // payload: spump.virtualControllerStatus === sys.board.valueMaps.virtualControllerStatus.getValue('running') ? [255] : [0],
                     retries: 1,
-                    response: true,
-                    onComplete: (err) => {
-                        if (err) {
-                            logger.error(`Error sending setPumpToRemoteControl for ${this.pump.name}: ${err.message}`);
-                            reject(err);
-                        }
-                        else resolve();
-                    }
+                    response: true
                 });
-                conn.queueSendMessage(out);
-            });
-        }
+                try {
+                    await out.sendAsync();
+                }
+                catch (err) {
+                    logger.error(`Error sending setPumpToRemoteControl for ${this.pump.name}: ${err.message}`);
+                }
+            }
+        } catch (err) { logger.error(`Error setting pump to Remote Control for ${this.pump.name}: ${err.message}`); }
     }
-    protected setPumpFeature(feature?: number) {
-        if (conn.isPortEnabled(this.pump.portId || 0)) {
-            // empty payload (possibly 0?, too) is no feature
-            // 6: Feature 1
-            return new Promise<void>((resolve, reject) => {
+    protected async setPumpFeatureAsync(feature?: number) {
+        // empty payload (possibly 0?, too) is no feature
+        // 6: Feature 1
+        try {
+            if (conn.isPortEnabled(this.pump.portId || 0)) {
                 let out = Outbound.create({
                     portId: this.pump.portId || 0,
                     protocol: Protocol.Pump,
@@ -628,71 +650,55 @@ export class NixiePumpRS485 extends NixiePump {
                     action: 5,
                     payload: typeof feature === 'undefined' ? [] : [feature],
                     retries: 2,
-                    response: true,
-                    onComplete: (err, msg: Outbound) => {
-                        if (err) {
-                            logger.error(`Error sending setPumpFeature for ${this.pump.name}: ${err.message}`);
-                            reject(err);
-                        }
-                        else resolve();
-                    }
+                    response: true
                 });
-                conn.queueSendMessage(out);
-            });
-        }
-        else {
-            
-        }
+                try {
+                    await out.sendAsync();
+                }
+                catch (err) {
+                    logger.error(`Error sending setPumpFeature for ${this.pump.name}: ${err.message}`);
+                }
+            }
+        } catch (err) { logger.error(`Error setting pump feature for ${this.pump.name}: ${err.message}`); }
     };
     protected async setPumpRPMAsync() {
         if (conn.isPortEnabled(this.pump.portId || 0)) {
-            return new Promise<void>((resolve, reject) => {
-                let out = Outbound.create({
-                    portId: this.pump.portId || 0,
-                    protocol: Protocol.Pump,
-                    dest: this.pump.address,
-                    action: 1,
-                    payload: [2, 196, Math.floor(this._targetSpeed / 256), this._targetSpeed % 256],
-                    retries: 1,
-                    // timeout: 250,
-                    response: true,
-                    onComplete: (err, msg) => {
-                        if (err) {
-                            logger.error(`Error sending setPumpRPMAsync for ${this.pump.name}: ${err.message}`);
-                            reject(err);
-                        }
-                        else resolve();
-                    }
-                });
-                conn.queueSendMessage(out);
+            let out = Outbound.create({
+                portId: this.pump.portId || 0,
+                protocol: Protocol.Pump,
+                dest: this.pump.address,
+                action: 1,
+                payload: [2, 196, Math.floor(this._targetSpeed / 256), this._targetSpeed % 256],
+                retries: 1,
+                // timeout: 250,
+                response: true
             });
-        }
-        else {
-
+            try {
+                await out.sendAsync();
+            }
+            catch (err) {
+                logger.error(`Error sending setPumpRPMAsync for ${this.pump.name}: ${err.message}`);
+            }
         }
     };
     protected async setPumpGPMAsync() {
+        // packet for vf; vsf will override
         if (conn.isPortEnabled(this.pump.portId || 0)) {
-            // packet for vf; vsf will override
-            return new Promise<void>((resolve, reject) => {
-                let out = Outbound.create({
-                    portId: this.pump.portId || 0,
-                    protocol: Protocol.Pump,
-                    dest: this.pump.address,
-                    action: 1,
-                    payload: [2, 228, 0, this._targetSpeed],
-                    retries: 1,
-                    response: true,
-                    onComplete: (err, msg) => {
-                        if (err) {
-                            logger.error(`Error sending setPumpGPMAsync for ${this.pump.name}: ${err.message}`);
-                            reject(err);
-                        }
-                        else resolve();
-                    }
-                });
-                conn.queueSendMessage(out);
+            let out = Outbound.create({
+                portId: this.pump.portId || 0,
+                protocol: Protocol.Pump,
+                dest: this.pump.address,
+                action: 1,
+                payload: [2, 228, 0, this._targetSpeed],
+                retries: 1,
+                response: true
             });
+            try {
+                await out.sendAsync();
+            }
+            catch (err) {
+                logger.error(`Error sending setPumpGPMAsync for ${this.pump.name}: ${err.message}`);
+            }
         }
     };
     public async closeAsync() {
@@ -701,16 +707,16 @@ export class NixiePumpRS485 extends NixiePump {
             logger.info(`Nixie Pump closing ${this.pump.name}.`)
             if (typeof this._pollTimer !== 'undefined' || this._pollTimer) clearTimeout(this._pollTimer);
             this._pollTimer = null;
+            this.closing = true;
             let pt = sys.board.valueMaps.pumpTypes.get(this.pump.type);
             let pstate = state.pumps.getItemById(this.pump.id);
             this._targetSpeed = 0;
-            try { await this.setDriveStateAsync(false); } catch (err) { logger.error(`Error closing pump ${this.pump.name}: ${err.message}`) }
-            try { if (!this.closing && pt.name !== 'vsf' && pt.name !== 'vs') await this.setPumpFeature(); } catch (err) { };
-            //try { await this.setPumpFeature(); } catch (err) { logger.error(`Error closing pump ${this.pump.name}: ${err.message}`) }
-            //try { await this.setDriveStateAsync(false); } catch (err) { logger.error(`Error closing pump ${this.pump.name}: ${err.message}`) }
-            try { await this.setPumpToRemoteControl(false); } catch (err) { logger.error(`Error closing pump ${this.pump.name}: ${err.message}`) }
-            this.closing = true;
-            // Make sure the polling timer is dead after we have closted this all off.  That way we do not
+            await this.setDriveStateAsync(false);
+            if (!this.closing && pt.name !== 'vsf' && pt.name !== 'vs') await this.setPumpFeatureAsync();
+            //await this.setPumpFeature(); 
+            //await this.setDriveStateAsync(false); 
+            await this.setPumpToRemoteControlAsync(false);
+            // Make sure the polling timer is dead after we have closed this all off.  That way we do not
             // have another process that revives it from the dead.
             if (typeof this._pollTimer !== 'undefined' || this._pollTimer) clearTimeout(this._pollTimer);
             this._pollTimer = null;
@@ -754,14 +760,42 @@ export class NixiePumpVF extends NixiePumpRS485 {
         if (this._targetSpeed !== 0) Math.min(Math.max(this.pump.minFlow, this._targetSpeed), this.pump.maxFlow);
         if (this._targetSpeed !== _newSpeed) logger.info(`NCP: Setting Pump ${this.pump.name} to ${_newSpeed} GPM.`);
     }
+    public async setPumpStateAsync(pstate: PumpState) {
+        // Don't poll while we are seting the state.
+        this.suspendPolling = true;
+        try {
+            let pt = sys.board.valueMaps.pumpTypes.get(this.pump.type);
+            if (state.mode === 0) {
+                // Since these process are async the closing flag can be set
+                // between calls.  We need to check it in between each call. // 4, 6, 5,  7
+                // When we are 0 then it sends 4[255], 6[4], 5[6]
+                // When we are not 0 then it sends 4[255], 6[10], 5[6], 1[flow]
+                if (!this.closing) await this.setPumpToRemoteControlAsync(); // Action 4
+                if (!this.closing && this._targetSpeed > 0) await this.setPumpGPMAsync(); // Action 1
+                if (!this.closing && this._targetSpeed > 0) await this.setPumpFeatureAsync(6); // Action 5
+                // RKS: 07-21-24 - This used to send an empty payload when the pump should be off.  For VF pumps it
+                // appears that not setting the feature or target flow will set the pump off when it gets to
+                // the drive state.
+                //if (!this.closing) await this.setPumpFeatureAsync(this._targetSpeed > 0 ? 6 : undefined); // Action 5
+                if (!this.closing) await this.setDriveStateAsync();         // Action 6
+                if (!this.closing) await setTimeout(200);
+                if (!this.closing) await this.requestPumpStatusAsync(); // Action 7
+            }
+            return new InterfaceServerResponse(200, 'Success');
+        }
+        catch (err) {
+            logger.error(`Error running pump sequence for ${this.pump.name}: ${err.message}`);
+            return Promise.reject(err);
+        }
+        finally { this.suspendPolling = false; }
+    };
 }
 export class NixiePumpVSF extends NixiePumpRS485 {
     public setTargetSpeed(pState: PumpState) {
         let _newSpeed = 0;
         let maxRPM = 0;
         let maxGPM = 0;
-        let flows = 0;
-        let speeds = 0;
+        let useFlow = false;
         if (!pState.pumpOnDelay) {
             let pumpCircuits = this.pump.circuits.get();
             let pt = sys.board.valueMaps.pumpTypes.get(this.pump.type);
@@ -769,13 +803,19 @@ export class NixiePumpVSF extends NixiePumpRS485 {
             // if there is a mix in the circuit array then they will not work.  In IntelliCenter if there is an RPM setting in the mix it will use RPM by converting
             // the GPM to RPM but if there is none then it will use GPM.
             let toRPM = (flowRate: number, minSpeed: number = 450, maxSpeed: number = 3450) => {
+                // eff = 114.4365
+                // gpm = 80
+                // speed = 2412
                 let eff = .03317 * maxSpeed;
-                let rpm = Math.min((flowRate * maxSpeed) / eff, maxSpeed);
+                let rpm = Math.min(Math.round((flowRate * maxSpeed) / eff), maxSpeed);
                 return rpm > 0 ? Math.max(rpm, minSpeed) : 0;
             };
             let toGPM = (speed: number, maxSpeed: number = 3450, minFlow: number = 15, maxFlow: number = 140) => {
+                // eff = 114.4365
+                // speed = 1100
+                // gpm = (114.4365 * 1100)/3450 = 36
                 let eff = .03317 * maxSpeed;
-                let gpm = Math.min((eff * speed) / maxSpeed, maxFlow);
+                let gpm = Math.min(Math.round((eff * speed) / maxSpeed), maxFlow);
                 return gpm > 0 ? Math.max(gpm, minFlow) : 0;
             }
             for (let i = 0; i < pumpCircuits.length; i++) {
@@ -783,73 +823,65 @@ export class NixiePumpVSF extends NixiePumpRS485 {
                 let pc = pumpCircuits[i];
                 if (circ.isOn) {
                     if (pc.units > 0) {
+                        let rpm = toRPM(pc.flow, pt.minSpeed, pt.MaxSpeed);
+                        if (rpm > maxRPM) useFlow = true;
                         maxGPM = Math.max(maxGPM, pc.flow);
-                        // Calculate an RPM from this flow.
-                        maxRPM = Math.max(maxGPM, toRPM(pc.flow, pt.minSpeed, pt.maxSpeed));
-                        flows++;
+                        rpm = Math.max(maxRPM, rpm);
                     }
                     else {
+                        let gpm = toGPM(pc.speed, pt.maxSpeed, pt.minFlow, pt.maxFlow);
+                        if (gpm > maxGPM) useFlow = false;
                         maxRPM = Math.max(maxRPM, pc.speed);
-                        maxGPM = Math.max(maxGPM, toGPM(pc.speed, pt.maxSpeed, pt.minFlow, pt.maxFlow));
-                        speeds++;
+                        maxGPM = Math.max(maxGPM, gpm);
                     }
                 }
             }
-            _newSpeed = speeds > 0 || flows === 0 ? maxRPM : maxGPM;
+            _newSpeed = useFlow ? maxGPM : maxRPM;
         }
         if (isNaN(_newSpeed)) _newSpeed = 0;
         // Send the flow message if it is flow and the rpm message if it is rpm.
-        if (this._targetSpeed !== _newSpeed) logger.info(`NCP: Setting Pump ${this.pump.name} to ${_newSpeed} ${flows > 0 ? 'GPM' : 'RPM'}.`);
+        if (this._targetSpeed !== _newSpeed) logger.info(`NCP: Setting Pump ${this.pump.name} to ${_newSpeed} ${useFlow ? 'GPM' : 'RPM'}.`);
         this._targetSpeed = _newSpeed;
     }
     protected async setPumpRPMAsync() {
         // vsf action is 10 for rpm
         if (conn.isPortEnabled(this.pump.portId || 0)) {
-            return new Promise<void>((resolve, reject) => {
-                let out = Outbound.create({
-                    portId: this.pump.portId || 0,
-                    protocol: Protocol.Pump,
-                    dest: this.pump.address,
-                    action: 10,
-                    payload: [2, 196, Math.floor(this._targetSpeed / 256), this._targetSpeed % 256],
-                    retries: 1,
-                    // timeout: 250,
-                    response: true,
-                    onComplete: (err, msg) => {
-                        if (err) {
-                            logger.error(`Error sending setPumpRPMAsync for ${this.pump.name}: ${err.message}`);
-                            reject(err);
-                        }
-                        else resolve();
-                    }
-                });
-                conn.queueSendMessage(out);
+            let out = Outbound.create({
+                portId: this.pump.portId || 0,
+                protocol: Protocol.Pump,
+                dest: this.pump.address,
+                action: 10,
+                payload: [2, 196, Math.floor(this._targetSpeed / 256), this._targetSpeed % 256],
+                retries: 1,
+                // timeout: 250,
+                response: true
             });
+            try {
+                await out.sendAsync();
+            }
+            catch (err) {
+                logger.error(`Error sending setPumpRPMAsync for ${this.pump.name}: ${err.message}`);
+            }
         }
     };
     protected async setPumpGPMAsync() {
+        // vsf payload; different from vf payload
         if (conn.isPortEnabled(this.pump.portId || 0)) {
-            // vsf payload; different from vf payload
-            return new Promise<void>((resolve, reject) => {
-                let out = Outbound.create({
-                    portId: this.pump.portId || 0,
-                    protocol: Protocol.Pump,
-                    dest: this.pump.address,
-                    action: 9,
-                    payload: [2, 196, 0, this._targetSpeed],
-                    retries: 1,
-                    response: true,
-                    onComplete: (err, msg) => {
-                        if (err) {
-                            logger.error(`Error sending setPumpGPMAsync for ${this.pump.name}: ${err.message}`);
-                            reject(err);
-                        }
-                        else resolve();
-                        return
-                    }
-                });
-                conn.queueSendMessage(out);
+            let out = Outbound.create({
+                portId: this.pump.portId || 0,
+                protocol: Protocol.Pump,
+                dest: this.pump.address,
+                action: 9,
+                payload: [2, 196, 0, this._targetSpeed],
+                retries: 1,
+                response: true
             });
+            try {
+                await out.sendAsync();
+            }
+            catch (err) {
+                logger.error(`Error sending setPumpGPMAsync for ${this.pump.name}: ${err.message}`);
+            }
         }
     };
 };
@@ -874,15 +906,14 @@ export class NixiePumpHWVS extends NixiePumpRS485 {
         this._targetSpeed = 0;
         await this.setPumpRPMAsync();
     }
-
+    public async setDriveStateAsync(running: boolean = false) { return Promise.resolve(); }
     public async setPumpStateAsync(pstate: PumpState) {
         // Don't poll while we are seting the state.
         this.suspendPolling = true;
         try {
-            let pt = sys.board.valueMaps.pumpTypes.get(this.pump.type);
             // Since these process are async the closing flag can be set
             // between calls.  We need to check it in between each call.
-            try { if (!this.closing) { await this.setPumpRPMAsync(); } } catch (err) { }
+            if (!this.closing) { await this.setPumpRPMAsync(); }
             return new InterfaceServerResponse(200, 'Success');
         }
         catch (err) {
@@ -891,13 +922,12 @@ export class NixiePumpHWVS extends NixiePumpRS485 {
         }
         finally { this.suspendPolling = false; }
     };
-    protected async requestPumpStatus() { return Promise.resolve(); };
-    protected setPumpFeature(feature?: number) { return Promise.resolve(); }
-    protected setPumpToRemoteControl(running: boolean = true) {
-        console.log(`Setting pump to remote control`);
-        if (conn.isPortEnabled(this.pump.portId || 0)) {
+    protected async requestPumpStatusAsync() { return Promise.resolve(); };
+    protected setPumpFeatureAsync(feature?: number) { return Promise.resolve(); }
+    protected async setPumpToRemoteControlAsync(running: boolean = true) {
+        try {
             // We do nothing on this pump to set it to remote control.  That is unless we are turning it off.
-            return new Promise<void>((resolve, reject) => {
+            if (conn.isPortEnabled(this.pump.portId || 0)) {
                 if (!running) {
                     let out = Outbound.create({
                         portId: this.pump.portId || 0,
@@ -908,20 +938,18 @@ export class NixiePumpHWVS extends NixiePumpRS485 {
                         payload: [0], // when stopAsync is called, pass false to return control to pump panel
                         // payload: spump.virtualControllerStatus === sys.board.valueMaps.virtualControllerStatus.getValue('running') ? [255] : [0],
                         retries: 1,
-                        response: Response.create({ protocol: Protocol.Hayward, action: 12, source: this.pump.address - 96}),
-                        onComplete: (err) => {
-                            if (err) {
-                                logger.error(`Error sending setPumpToRemoteControl for ${this.pump.name}: ${err.message}`);
-                                reject(err);
-                            }
-                            else resolve();
-                        }
+                        response: Response.create({ protocol: Protocol.Hayward, action: 12, source: this.pump.address - 96 })
                     });
-                    conn.queueSendMessage(out);
+                    try {
+                        await out.sendAsync();
+                    }
+                    catch (err) {
+                        logger.error(`Error sending setPumpToRemoteControl for ${this.pump.name}: ${err.message}`);
+
+                    }
                 }
-                else resolve();
-            });
-        }
+            }
+        } catch(err) { `Error sending setPumpToRemoteControl message for ${this.pump.name}: ${err.message}` };
     }
     protected async setPumpRPMAsync() {
         // Address 1
@@ -935,31 +963,27 @@ export class NixiePumpHWVS extends NixiePumpRS485 {
         // So in essence for equipment item 0-16 (pump addresses) the outbound is really a broadcast on 12 (broadcast) from 1 and the inbound is
         // broadcast from the equipment item to 0 (anybody).
         if (conn.isPortEnabled(this.pump.portId || 0)) {
-            return new Promise<void>((resolve, reject) => {
-                let pt = sys.board.valueMaps.pumpTypes.get(this.pump.type);
-                let out = Outbound.create({
-                    portId: this.pump.portId || 0,
-                    protocol: Protocol.Hayward,
-                    source: 1, // Use the broadcast address
-                    dest: this.pump.address - 96,
-                    action: 12,
-                    payload: [Math.min(Math.round((this._targetSpeed / pt.maxSpeed) * 100), 100)], // when stopAsync is called, pass false to return control to pump panel
-                    retries: 1,
-                    response: Response.create({ protocol: Protocol.Hayward, action: 12, source: this.pump.address - 96 }),
-                    onComplete: (err) => {
-                        if (err) {
-                            let pstate = state.pumps.getItemById(this.pump.id);
-                            pstate.command = 0;
-                            pstate.rpm = 0;
-                            pstate.watts = 0;
-                            logger.error(`Error sending setPumpRPM for ${this.pump.name}: ${err.message}`);
-                            reject(err);
-                        }
-                        else resolve();
-                    }
-                });
-                conn.queueSendMessage(out);
+            let pt = sys.board.valueMaps.pumpTypes.get(this.pump.type);
+            let out = Outbound.create({
+                portId: this.pump.portId || 0,
+                protocol: Protocol.Hayward,
+                source: 1, // Use the broadcast address
+                dest: this.pump.address - 96,
+                action: 12,
+                payload: [Math.min(Math.round((this._targetSpeed / pt.maxSpeed) * 100), 100)], // when stopAsync is called, pass false to return control to pump panel
+                retries: 1,
+                response: Response.create({ protocol: Protocol.Hayward, action: 12, source: this.pump.address - 96 })
             });
+            try {
+                await out.sendAsync();
+            }
+            catch (err) {
+                logger.error(`Error sending setPumpRPM for ${this.pump.name}: ${err.message}`);
+                let pstate = state.pumps.getItemById(this.pump.id);
+                pstate.command = 0;
+                pstate.rpm = 0;
+                pstate.watts = 0;
+            }
         }
         else {
             let pstate = state.pumps.getItemById(this.pump.id);
@@ -967,5 +991,6 @@ export class NixiePumpHWVS extends NixiePumpRS485 {
             pstate.rpm = 0;
             pstate.watts = 0;
         }
+
     };
 }

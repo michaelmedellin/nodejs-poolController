@@ -1,5 +1,6 @@
 /*  nodejs-poolController.  An application to control pool equipment.
-Copyright (C) 2016, 2017, 2018, 2019, 2020.  Russell Goldin, tagyoureit.  russ.goldin@gmail.com
+Copyright (C) 2016, 2017, 2018, 2019, 2020, 2021, 2022.  
+Russell Goldin, tagyoureit.  russ.goldin@gmail.com
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU Affero General Public License as
@@ -14,9 +15,12 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
-import { Inbound } from "../Messages";
+import { Inbound, Outbound, Protocol } from "../Messages";
 import { state } from "../../../State";
 import { sys, ControllerType } from "../../../Equipment";
+import { conn } from "../../Comms";
+import { logger } from "../../../../logger/Logger";
+
 export class PumpStateMessage {
     private static detectPumpType(msg: Inbound) {
         let pumpType = -1;
@@ -69,6 +73,29 @@ export class PumpStateMessage {
         let ptype = sys.board.valueMaps.pumpTypes.transform(pumpCfg.type);
         let pump = state.pumps.getItemById(pumpId, pumpCfg.isActive === true);
         switch (msg.action) {
+            case 1:
+                if (msg.source === 96 && sys.controllerType === ControllerType.EasyTouch) {
+                    if (sys.equipment.modules.getItemByIndex(0, false).type >= 128) {
+                        // EasyTouch Version 1 controllers do not request the current information about rpms or wattage from the pump.  We need to ask in
+                        // its stead.
+                        let out = Outbound.create({
+                                portId: pumpCfg.portId || 0,
+                                protocol: Protocol.Pump,
+                                dest: pumpCfg.address,
+                                action: 7,
+                                payload: [],
+                                retries: 1,
+                                response: true,
+                                onComplete: (err, _) => {
+                                    if (err) {
+                                        logger.error(`EasyTouch 1 request pump status failed for ${pump.name}: ${err.message}`);
+                                    }
+                                }
+                            });
+                        conn.queueSendMessage(out);
+                    }
+                }
+                break;
             case 7:
                 //[165, 63, 15, 16, 2, 29][11, 47, 32, 0, 0, 0, 0, 0, 0, 32, 0, 0, 2, 0, 59, 59, 0, 241, 56, 121, 24, 246, 0, 0, 0, 0, 0, 23, 0][4, 219]
                 //[165, 0, 96, 16, 1, 4][2, 196, 7, 58][2, 33]
@@ -78,7 +105,7 @@ export class PumpStateMessage {
                 pump.mode = msg.extractPayloadByte(1);
                 pump.driveState = msg.extractPayloadByte(2);
                 pump.watts = (msg.extractPayloadByte(3) * 256) + msg.extractPayloadByte(4);
-                pump.rpm = (typeof ptype !== 'undefined' && ptype.maxSpeed > 0) ? (msg.extractPayloadByte(5) * 256) + msg.extractPayloadByte(6) : 0;
+                pump.rpm = (typeof ptype !== 'undefined' && (ptype.maxSpeed > 0 || ptype.name === 'vf')) ? (msg.extractPayloadByte(5) * 256) + msg.extractPayloadByte(6) : 0;
                 pump.flow = (typeof ptype !== 'undefined' && ptype.maxFlow > 0) ? msg.extractPayloadByte(7) : 0;
                 pump.ppc = msg.extractPayloadByte(8);
                 pump.status = (msg.extractPayloadByte(11) * 256) + msg.extractPayloadByte(12); // 16-bits of error codes.
