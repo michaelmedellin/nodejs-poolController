@@ -15,4 +15,5 @@ FROM gcr.io/distroless/nodejs:18
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=ts-remover /app ./
+
 CMD ["dist/app.js"]
