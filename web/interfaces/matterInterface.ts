@@ -9,10 +9,17 @@ import { BaseInterfaceBindings, InterfaceContext } from "./baseInterface";
 // Matter imports - these will be available after npm install
 let ServerNode: any;
 let Endpoint: any;
+let AggregatorEndpoint: any;
+let BridgedDeviceBasicInformationServer: any;
 let OnOffLightDevice: any;
 let OnOffPlugInUnitDevice: any;
 let TemperatureSensorDevice: any;
 let ThermostatDevice: any;
+
+// Bridged device types (composed with BridgedDeviceBasicInformationServer)
+let BridgedOnOffLight: any;
+let BridgedOnOffPlugInUnit: any;
+let BridgedTemperatureSensor: any;
 
 // Track if Matter is available
 let matterAvailable = false;
@@ -22,13 +29,22 @@ let matterAvailable = false;
 try {
     const matterMain = require("@matter/main");
     const matterDevices = require("@matter/main/devices");
+    const matterEndpoints = require("@matter/main/endpoints");
+    const matterBehaviors = require("@matter/main/behaviors");
 
     ServerNode = matterMain.ServerNode;
     Endpoint = matterMain.Endpoint;
+    AggregatorEndpoint = matterEndpoints.AggregatorEndpoint;
+    BridgedDeviceBasicInformationServer = matterBehaviors.BridgedDeviceBasicInformationServer;
     OnOffLightDevice = matterDevices.OnOffLightDevice;
     OnOffPlugInUnitDevice = matterDevices.OnOffPlugInUnitDevice;
     TemperatureSensorDevice = matterDevices.TemperatureSensorDevice;
     ThermostatDevice = matterDevices.ThermostatDevice;
+
+    // Compose device types with BridgedDeviceBasicInformationServer for proper naming
+    BridgedOnOffLight = OnOffLightDevice.with(BridgedDeviceBasicInformationServer);
+    BridgedOnOffPlugInUnit = OnOffPlugInUnitDevice.with(BridgedDeviceBasicInformationServer);
+    BridgedTemperatureSensor = TemperatureSensorDevice.with(BridgedDeviceBasicInformationServer);
 
     matterAvailable = true;
 } catch (err) {
@@ -38,6 +54,7 @@ try {
 
 export class MatterInterfaceBindings extends BaseInterfaceBindings {
     private server: any;
+    private aggregator: any;
     private endpoints: Map<string, any> = new Map();
     private initialized: boolean = false;
     declare context: InterfaceContext;
@@ -58,7 +75,7 @@ export class MatterInterfaceBindings extends BaseInterfaceBindings {
 
             const opts = this.cfg.options || {};
 
-            // Create Matter ServerNode (bridge)
+            // Create Matter ServerNode (bridge root)
             this.server = await ServerNode.create({
                 id: opts.nodeId || "pool-controller-bridge",
                 network: {
@@ -83,7 +100,13 @@ export class MatterInterfaceBindings extends BaseInterfaceBindings {
                 },
             });
 
-            // Create endpoints for pool equipment
+            // Create Aggregator endpoint - this is the bridge container for all devices
+            this.aggregator = new Endpoint(AggregatorEndpoint, {
+                id: "bridge-aggregator"
+            });
+            await this.server.add(this.aggregator);
+
+            // Create bridged endpoints for pool equipment
             await this.createEndpoints();
 
             // Start the server
@@ -150,15 +173,22 @@ export class MatterInterfaceBindings extends BaseInterfaceBindings {
             const endpointId = `circuit-${circuit.id}`;
             const deviceName = circuit.name || `Circuit ${circuit.id}`;
 
-            const endpoint = new Endpoint(OnOffLightDevice, {
+            const endpoint = new Endpoint(BridgedOnOffLight, {
                 id: endpointId,
+                bridgedDeviceBasicInformation: {
+                    nodeLabel: deviceName,
+                    productName: deviceName,
+                    productLabel: deviceName,
+                    serialNumber: `circuit-${circuit.id}`,
+                    reachable: true,
+                },
                 onOff: {
                     onOff: circuit.isOn === true
                 },
             });
 
-            // Add endpoint to server first
-            await this.server.add(endpoint);
+            // Add endpoint to the aggregator (not the server)
+            await this.aggregator.add(endpoint);
             this.endpoints.set(endpointId, endpoint);
 
             // Subscribe to events after endpoint is added
@@ -173,7 +203,7 @@ export class MatterInterfaceBindings extends BaseInterfaceBindings {
                 });
             }
 
-            logger.debug(`Created Matter endpoint for circuit: ${circuit.name} (${circuit.id})`);
+            logger.debug(`Created Matter endpoint for circuit: ${deviceName} (${circuit.id})`);
         } catch (err) {
             logger.error(`Error creating circuit endpoint ${circuit.id}: ${err.message}`);
         }
@@ -184,15 +214,22 @@ export class MatterInterfaceBindings extends BaseInterfaceBindings {
             const endpointId = `feature-${feature.id}`;
             const deviceName = feature.name || `Feature ${feature.id}`;
 
-            const endpoint = new Endpoint(OnOffLightDevice, {
+            const endpoint = new Endpoint(BridgedOnOffLight, {
                 id: endpointId,
+                bridgedDeviceBasicInformation: {
+                    nodeLabel: deviceName,
+                    productName: deviceName,
+                    productLabel: deviceName,
+                    serialNumber: `feature-${feature.id}`,
+                    reachable: true,
+                },
                 onOff: {
                     onOff: feature.isOn === true
                 },
             });
 
-            // Add endpoint to server first
-            await this.server.add(endpoint);
+            // Add endpoint to the aggregator (not the server)
+            await this.aggregator.add(endpoint);
             this.endpoints.set(endpointId, endpoint);
 
             // Subscribe to events after endpoint is added
@@ -207,7 +244,7 @@ export class MatterInterfaceBindings extends BaseInterfaceBindings {
                 });
             }
 
-            logger.debug(`Created Matter endpoint for feature: ${feature.name} (${feature.id})`);
+            logger.debug(`Created Matter endpoint for feature: ${deviceName} (${feature.id})`);
         } catch (err) {
             logger.error(`Error creating feature endpoint ${feature.id}: ${err.message}`);
         }
@@ -221,15 +258,22 @@ export class MatterInterfaceBindings extends BaseInterfaceBindings {
             // Pump is "on" if it's running (rpm > 0 or watts > 0)
             const isRunning = (pump.rpm && pump.rpm > 0) || (pump.watts && pump.watts > 0);
 
-            const endpoint = new Endpoint(OnOffPlugInUnitDevice, {
+            const endpoint = new Endpoint(BridgedOnOffPlugInUnit, {
                 id: endpointId,
+                bridgedDeviceBasicInformation: {
+                    nodeLabel: deviceName,
+                    productName: deviceName,
+                    productLabel: deviceName,
+                    serialNumber: `pump-${pump.id}`,
+                    reachable: true,
+                },
                 onOff: {
                     onOff: isRunning
                 },
             });
 
-            // Add endpoint to server first
-            await this.server.add(endpoint);
+            // Add endpoint to the aggregator (not the server)
+            await this.aggregator.add(endpoint);
             this.endpoints.set(endpointId, endpoint);
 
             // Subscribe to events after endpoint is added
@@ -252,7 +296,7 @@ export class MatterInterfaceBindings extends BaseInterfaceBindings {
                 });
             }
 
-            logger.debug(`Created Matter endpoint for pump: ${pump.name} (${pump.id})`);
+            logger.debug(`Created Matter endpoint for pump: ${deviceName} (${pump.id})`);
         } catch (err) {
             logger.error(`Error creating pump endpoint ${pump.id}: ${err.message}`);
         }
@@ -265,50 +309,74 @@ export class MatterInterfaceBindings extends BaseInterfaceBindings {
                 const body = state.temps.bodies.getItemByIndex(i);
                 if (body && typeof body.temp !== 'undefined') {
                     const endpointId = `temp-water-${body.id}`;
+                    const deviceName = `${body.name || 'Water'} Temp`;
 
-                    const endpoint = new Endpoint(TemperatureSensorDevice, {
+                    const endpoint = new Endpoint(BridgedTemperatureSensor, {
                         id: endpointId,
+                        bridgedDeviceBasicInformation: {
+                            nodeLabel: deviceName,
+                            productName: deviceName,
+                            productLabel: deviceName,
+                            serialNumber: `temp-water-${body.id}`,
+                            reachable: true,
+                        },
                         temperatureMeasurement: {
                             measuredValue: this.toMatterTemp(body.temp)
                         },
                     });
 
-                    await this.server.add(endpoint);
+                    await this.aggregator.add(endpoint);
                     this.endpoints.set(endpointId, endpoint);
-                    logger.debug(`Created Matter temperature endpoint for body: ${body.name} (${body.id})`);
+                    logger.debug(`Created Matter temperature endpoint: ${deviceName} (${body.id})`);
                 }
             }
 
             // Create air temperature sensor if available
             if (typeof state.temps.air !== 'undefined' && state.temps.air !== null) {
                 const endpointId = "temp-air";
+                const deviceName = "Air Temp";
 
-                const endpoint = new Endpoint(TemperatureSensorDevice, {
+                const endpoint = new Endpoint(BridgedTemperatureSensor, {
                     id: endpointId,
+                    bridgedDeviceBasicInformation: {
+                        nodeLabel: deviceName,
+                        productName: deviceName,
+                        productLabel: deviceName,
+                        serialNumber: "temp-air",
+                        reachable: true,
+                    },
                     temperatureMeasurement: {
                         measuredValue: this.toMatterTemp(state.temps.air)
                     },
                 });
 
-                await this.server.add(endpoint);
+                await this.aggregator.add(endpoint);
                 this.endpoints.set(endpointId, endpoint);
-                logger.debug(`Created Matter temperature endpoint for air`);
+                logger.debug(`Created Matter temperature endpoint: ${deviceName}`);
             }
 
             // Create solar temperature sensor if available
             if (typeof state.temps.solar !== 'undefined' && state.temps.solar !== null) {
                 const endpointId = "temp-solar";
+                const deviceName = "Solar Temp";
 
-                const endpoint = new Endpoint(TemperatureSensorDevice, {
+                const endpoint = new Endpoint(BridgedTemperatureSensor, {
                     id: endpointId,
+                    bridgedDeviceBasicInformation: {
+                        nodeLabel: deviceName,
+                        productName: deviceName,
+                        productLabel: deviceName,
+                        serialNumber: "temp-solar",
+                        reachable: true,
+                    },
                     temperatureMeasurement: {
                         measuredValue: this.toMatterTemp(state.temps.solar)
                     },
                 });
 
-                await this.server.add(endpoint);
+                await this.aggregator.add(endpoint);
                 this.endpoints.set(endpointId, endpoint);
-                logger.debug(`Created Matter temperature endpoint for solar`);
+                logger.debug(`Created Matter temperature endpoint: ${deviceName}`);
             }
         } catch (err) {
             logger.error(`Error creating temperature endpoints: ${err.message}`);
