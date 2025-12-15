@@ -80,6 +80,10 @@ export class MqttInterfaceBindings extends BaseInterfaceBindings {
                 logger.error(`MQTT error ${error}`)
                 this.clearWillState();
             });
+            this.client.on('offline', () => {
+                logger.info(`MQTT client offline ${this.cfg.name}`);
+                this.sentInitialMessages = false;
+            });
         } catch (err) { logger.error(`Error initializing MQTT client ${this.cfg.name}: ${err}`); }
     }
     public async stopAsync() {
