@@ -38,6 +38,7 @@ import { logger } from "../logger/Logger";
 import { HttpInterfaceBindings } from './interfaces/httpInterface';
 import { InfluxInterfaceBindings } from './interfaces/influxInterface';
 import { MqttInterfaceBindings } from './interfaces/mqttInterface';
+import { MatterInterfaceBindings } from './interfaces/matterInterface';
 import { RuleInterfaceBindings } from "./interfaces/ruleInterface";
 import { ConfigRoute } from "./services/config/Config";
 import { ConfigSocket } from "./services/config/ConfigSocket";
@@ -136,6 +137,11 @@ export class WebServer {
                         break;
                     case 'rem':
                         int = new REMInterfaceServer(c.name, type);
+                        int.init(c);
+                        this._servers.push(int);
+                        break;
+                    case 'matter':
+                        int = new MatterInterfaceServer(c.name, type);
                         int.init(c);
                         this._servers.push(int);
                         break;
@@ -1395,6 +1401,32 @@ export class MqttInterfaceServer extends ProtoServer {
             fs.unwatchFile(this.bindingsPath);
             if (this.bindings) await this.bindings.stopAsync();
         } catch (err) { logger.error(`Error shutting down MQTT Server ${this.name}: ${err.message}`); }
+    }
+}
+export class MatterInterfaceServer extends ProtoServer {
+    public bindings: MatterInterfaceBindings;
+    public async init(cfg) {
+        this.uuid = cfg.uuid;
+        if (cfg.enabled) {
+            this.bindings = new MatterInterfaceBindings(cfg);
+            try {
+                await this.bindings.initAsync();
+                this.isRunning = true;
+            } catch (err) {
+                logger.error(`Error initializing Matter interface: ${err.message}`);
+                this.isRunning = false;
+            }
+        }
+    }
+    public emitToClients(evt: string, ...data: any) {
+        if (this.isRunning && this.bindings) {
+            this.bindings.bindEvent(evt, ...data);
+        }
+    }
+    public async stopAsync() {
+        try {
+            if (this.bindings) await this.bindings.stopAsync();
+        } catch (err) { logger.error(`Error shutting down Matter Server ${this.name}: ${err.message}`); }
     }
 }
 export class InterfaceServerResponse {

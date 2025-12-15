@@ -175,6 +175,18 @@
           "changesOnly": true
         }
       },
+      "matter": {
+        "name": "Matter",
+        "type": "matter",
+        "enabled": false,
+        "fileName": "matter.json",
+        "options": {
+          "port": 5540,
+          "passcode": 20202021,
+          "discriminator": 3840,
+          "name": "Pool Controller"
+        }
+      },
       "aqualinkD": {
         "name": "AquaLinkD",
         "type": "mqtt",
