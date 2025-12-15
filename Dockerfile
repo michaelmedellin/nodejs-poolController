@@ -19,5 +19,4 @@ LABEL org.opencontainers.image.source="https://github.com/tagyoureit/nodejs-pool
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=ts-remover /app ./
-USER nonroot
 CMD ["dist/app.js"]
