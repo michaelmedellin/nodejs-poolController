@@ -129,12 +129,15 @@ export class MatterInterfaceBindings extends BaseInterfaceBindings {
             await this.createTempEndpoints();
 
             // Create heater/thermostat endpoint for each body
-            for (let i = 0; i < state.temps.bodies.length; i++) {
-                const body = state.temps.bodies.getItemByIndex(i);
-                if (body) {
-                    await this.createHeaterEndpoint(body);
-                }
-            }
+            // NOTE: Heater endpoints disabled for now - ThermostatDevice requires
+            // additional ThermostatServer behavior configuration in matter.js
+            // TODO: Implement proper thermostat support
+            // for (let i = 0; i < state.temps.bodies.length; i++) {
+            //     const body = state.temps.bodies.getItemByIndex(i);
+            //     if (body) {
+            //         await this.createHeaterEndpoint(body);
+            //     }
+            // }
 
             logger.info(`Created ${this.endpoints.size} Matter endpoints`);
         } catch (err) {
