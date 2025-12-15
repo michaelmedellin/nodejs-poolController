@@ -155,25 +155,27 @@ export class MatterInterfaceBindings extends BaseInterfaceBindings {
                     serialNumber: `circuit-${circuit.id}`,
                     reachable: true,
                 },
+                onOff: {
+                    onOff: circuit.isOn === true
+                },
             });
 
-            // Set initial state
-            await endpoint.set({
-                onOff: { onOff: circuit.isOn === true }
-            });
-
-            // Handle commands from Matter controllers
-            endpoint.events.onOff.onOff$Changed.on(async (value: boolean) => {
-                try {
-                    logger.info(`Matter: Circuit ${circuit.id} (${circuit.name}) commanded to ${value ? 'on' : 'off'}`);
-                    await sys.board.circuits.setCircuitStateAsync(circuit.id, value);
-                } catch (err) {
-                    logger.error(`Matter: Error setting circuit ${circuit.id}: ${err.message}`);
-                }
-            });
-
+            // Add endpoint to server first
             await this.server.add(endpoint);
             this.endpoints.set(endpointId, endpoint);
+
+            // Subscribe to events after endpoint is added
+            if (endpoint.events?.onOff?.onOff$Changed) {
+                endpoint.events.onOff.onOff$Changed.on(async (value: boolean) => {
+                    try {
+                        logger.info(`Matter: Circuit ${circuit.id} (${circuit.name}) commanded to ${value ? 'on' : 'off'}`);
+                        await sys.board.circuits.setCircuitStateAsync(circuit.id, value);
+                    } catch (err) {
+                        logger.error(`Matter: Error setting circuit ${circuit.id}: ${err.message}`);
+                    }
+                });
+            }
+
             logger.debug(`Created Matter endpoint for circuit: ${circuit.name} (${circuit.id})`);
         } catch (err) {
             logger.error(`Error creating circuit endpoint ${circuit.id}: ${err.message}`);
@@ -193,23 +195,27 @@ export class MatterInterfaceBindings extends BaseInterfaceBindings {
                     serialNumber: `feature-${feature.id}`,
                     reachable: true,
                 },
+                onOff: {
+                    onOff: feature.isOn === true
+                },
             });
 
-            await endpoint.set({
-                onOff: { onOff: feature.isOn === true }
-            });
-
-            endpoint.events.onOff.onOff$Changed.on(async (value: boolean) => {
-                try {
-                    logger.info(`Matter: Feature ${feature.id} (${feature.name}) commanded to ${value ? 'on' : 'off'}`);
-                    await sys.board.features.setFeatureStateAsync(feature.id, value);
-                } catch (err) {
-                    logger.error(`Matter: Error setting feature ${feature.id}: ${err.message}`);
-                }
-            });
-
+            // Add endpoint to server first
             await this.server.add(endpoint);
             this.endpoints.set(endpointId, endpoint);
+
+            // Subscribe to events after endpoint is added
+            if (endpoint.events?.onOff?.onOff$Changed) {
+                endpoint.events.onOff.onOff$Changed.on(async (value: boolean) => {
+                    try {
+                        logger.info(`Matter: Feature ${feature.id} (${feature.name}) commanded to ${value ? 'on' : 'off'}`);
+                        await sys.board.features.setFeatureStateAsync(feature.id, value);
+                    } catch (err) {
+                        logger.error(`Matter: Error setting feature ${feature.id}: ${err.message}`);
+                    }
+                });
+            }
+
             logger.debug(`Created Matter endpoint for feature: ${feature.name} (${feature.id})`);
         } catch (err) {
             logger.error(`Error creating feature endpoint ${feature.id}: ${err.message}`);
@@ -220,6 +226,9 @@ export class MatterInterfaceBindings extends BaseInterfaceBindings {
         try {
             const endpointId = `pump-${pump.id}`;
 
+            // Pump is "on" if it's running (rpm > 0 or watts > 0)
+            const isRunning = (pump.rpm && pump.rpm > 0) || (pump.watts && pump.watts > 0);
+
             const endpoint = new Endpoint(OnOffPlugInUnitDevice, {
                 id: endpointId,
                 bridgedDeviceBasicInformation: {
@@ -229,33 +238,35 @@ export class MatterInterfaceBindings extends BaseInterfaceBindings {
                     serialNumber: `pump-${pump.id}`,
                     reachable: true,
                 },
+                onOff: {
+                    onOff: isRunning
+                },
             });
 
-            // Pump is "on" if it's running (rpm > 0 or watts > 0)
-            const isRunning = (pump.rpm && pump.rpm > 0) || (pump.watts && pump.watts > 0);
-            await endpoint.set({
-                onOff: { onOff: isRunning }
-            });
-
-            endpoint.events.onOff.onOff$Changed.on(async (value: boolean) => {
-                try {
-                    logger.info(`Matter: Pump ${pump.id} commanded to ${value ? 'on' : 'off'}`);
-                    // Pumps are controlled via their associated circuits
-                    // Find the first circuit associated with this pump
-                    const pumpConfig = sys.pumps.getItemById(pump.id);
-                    if (pumpConfig && pumpConfig.circuits && pumpConfig.circuits.length > 0) {
-                        const circuitId = pumpConfig.circuits.getItemByIndex(0).circuit;
-                        await sys.board.circuits.setCircuitStateAsync(circuitId, value);
-                    } else {
-                        logger.warn(`Matter: No circuit found for pump ${pump.id}`);
-                    }
-                } catch (err) {
-                    logger.error(`Matter: Error setting pump ${pump.id}: ${err.message}`);
-                }
-            });
-
+            // Add endpoint to server first
             await this.server.add(endpoint);
             this.endpoints.set(endpointId, endpoint);
+
+            // Subscribe to events after endpoint is added
+            if (endpoint.events?.onOff?.onOff$Changed) {
+                endpoint.events.onOff.onOff$Changed.on(async (value: boolean) => {
+                    try {
+                        logger.info(`Matter: Pump ${pump.id} commanded to ${value ? 'on' : 'off'}`);
+                        // Pumps are controlled via their associated circuits
+                        // Find the first circuit associated with this pump
+                        const pumpConfig = sys.pumps.getItemById(pump.id);
+                        if (pumpConfig && pumpConfig.circuits && pumpConfig.circuits.length > 0) {
+                            const circuitId = pumpConfig.circuits.getItemByIndex(0).circuit;
+                            await sys.board.circuits.setCircuitStateAsync(circuitId, value);
+                        } else {
+                            logger.warn(`Matter: No circuit found for pump ${pump.id}`);
+                        }
+                    } catch (err) {
+                        logger.error(`Matter: Error setting pump ${pump.id}: ${err.message}`);
+                    }
+                });
+            }
+
             logger.debug(`Created Matter endpoint for pump: ${pump.name} (${pump.id})`);
         } catch (err) {
             logger.error(`Error creating pump endpoint ${pump.id}: ${err.message}`);
@@ -279,12 +290,9 @@ export class MatterInterfaceBindings extends BaseInterfaceBindings {
                             serialNumber: `temp-water-${body.id}`,
                             reachable: true,
                         },
-                    });
-
-                    await endpoint.set({
                         temperatureMeasurement: {
                             measuredValue: this.toMatterTemp(body.temp)
-                        }
+                        },
                     });
 
                     await this.server.add(endpoint);
@@ -306,12 +314,9 @@ export class MatterInterfaceBindings extends BaseInterfaceBindings {
                         serialNumber: "temp-air",
                         reachable: true,
                     },
-                });
-
-                await endpoint.set({
                     temperatureMeasurement: {
                         measuredValue: this.toMatterTemp(state.temps.air)
-                    }
+                    },
                 });
 
                 await this.server.add(endpoint);
@@ -332,12 +337,9 @@ export class MatterInterfaceBindings extends BaseInterfaceBindings {
                         serialNumber: "temp-solar",
                         reachable: true,
                     },
-                });
-
-                await endpoint.set({
                     temperatureMeasurement: {
                         measuredValue: this.toMatterTemp(state.temps.solar)
-                    }
+                    },
                 });
 
                 await this.server.add(endpoint);
@@ -373,34 +375,39 @@ export class MatterInterfaceBindings extends BaseInterfaceBindings {
                 }
             });
 
-            // Handle system mode changes (on/off)
-            endpoint.events.thermostat.systemMode$Changed?.on(async (value: number) => {
-                try {
-                    // 0 = Off, 4 = Heat
-                    const modeName = value === 4 ? 'heater' : 'off';
-                    logger.info(`Matter: Heater ${body.id} mode commanded to ${modeName}`);
-                    const modeVal = sys.board.valueMaps.heatModes.getValue(modeName);
-                    if (typeof modeVal !== 'undefined') {
-                        await sys.board.bodies.setHeatModeAsync(body, modeVal);
-                    }
-                } catch (err) {
-                    logger.error(`Matter: Error setting heater mode for body ${body.id}: ${err.message}`);
-                }
-            });
-
-            // Handle setpoint changes
-            endpoint.events.thermostat.occupiedHeatingSetpoint$Changed?.on(async (value: number) => {
-                try {
-                    const tempF = this.fromMatterTemp(value);
-                    logger.info(`Matter: Heater ${body.id} setpoint commanded to ${tempF}°F`);
-                    await sys.board.bodies.setHeatSetpointAsync(body, tempF);
-                } catch (err) {
-                    logger.error(`Matter: Error setting heater setpoint for body ${body.id}: ${err.message}`);
-                }
-            });
-
+            // Add endpoint to server first
             await this.server.add(endpoint);
             this.endpoints.set(endpointId, endpoint);
+
+            // Subscribe to events after endpoint is added
+            if (endpoint.events?.thermostat?.systemMode$Changed) {
+                endpoint.events.thermostat.systemMode$Changed.on(async (value: number) => {
+                    try {
+                        // 0 = Off, 4 = Heat
+                        const modeName = value === 4 ? 'heater' : 'off';
+                        logger.info(`Matter: Heater ${body.id} mode commanded to ${modeName}`);
+                        const modeVal = sys.board.valueMaps.heatModes.getValue(modeName);
+                        if (typeof modeVal !== 'undefined') {
+                            await sys.board.bodies.setHeatModeAsync(body, modeVal);
+                        }
+                    } catch (err) {
+                        logger.error(`Matter: Error setting heater mode for body ${body.id}: ${err.message}`);
+                    }
+                });
+            }
+
+            if (endpoint.events?.thermostat?.occupiedHeatingSetpoint$Changed) {
+                endpoint.events.thermostat.occupiedHeatingSetpoint$Changed.on(async (value: number) => {
+                    try {
+                        const tempF = this.fromMatterTemp(value);
+                        logger.info(`Matter: Heater ${body.id} setpoint commanded to ${tempF}°F`);
+                        await sys.board.bodies.setHeatSetpointAsync(body, tempF);
+                    } catch (err) {
+                        logger.error(`Matter: Error setting heater setpoint for body ${body.id}: ${err.message}`);
+                    }
+                });
+            }
+
             logger.debug(`Created Matter heater endpoint for body: ${body.name} (${body.id})`);
         } catch (err) {
             logger.error(`Error creating heater endpoint ${body.id}: ${err.message}`);
