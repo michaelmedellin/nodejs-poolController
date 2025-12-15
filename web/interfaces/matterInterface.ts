@@ -18,6 +18,7 @@ let ThermostatDevice: any;
 let matterAvailable = false;
 
 // Attempt to load Matter dependencies
+// Note: logger may not be initialized at module load time, so we use console for initial load messages
 try {
     const matterMain = require("@matter/main");
     const matterDevices = require("@matter/main/devices");
@@ -30,9 +31,9 @@ try {
     ThermostatDevice = matterDevices.ThermostatDevice;
 
     matterAvailable = true;
-    logger.info("Matter dependencies loaded successfully");
 } catch (err) {
-    logger.warn(`Matter dependencies not available: ${err.message}. Run 'npm install' to enable Matter support.`);
+    // Matter dependencies not installed - this is fine, interface will be disabled
+    matterAvailable = false;
 }
 
 export class MatterInterfaceBindings extends BaseInterfaceBindings {
