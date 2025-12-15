@@ -15,11 +15,13 @@ let OnOffLightDevice: any;
 let OnOffPlugInUnitDevice: any;
 let TemperatureSensorDevice: any;
 let ThermostatDevice: any;
+let Thermostat: any; // Cluster definition for enums (SystemMode, ControlSequenceOfOperation)
 
 // Bridged device types (composed with BridgedDeviceBasicInformationServer)
 let BridgedOnOffLight: any;
 let BridgedOnOffPlugInUnit: any;
 let BridgedTemperatureSensor: any;
+let BridgedThermostat: any;
 
 // Track if Matter is available
 let matterAvailable = false;
@@ -31,6 +33,7 @@ try {
     const matterDevices = require("@matter/main/devices");
     const matterEndpoints = require("@matter/main/endpoints");
     const matterBehaviors = require("@matter/main/behaviors");
+    const matterClusters = require("@matter/main/clusters");
 
     ServerNode = matterMain.ServerNode;
     Endpoint = matterMain.Endpoint;
@@ -40,11 +43,13 @@ try {
     OnOffPlugInUnitDevice = matterDevices.OnOffPlugInUnitDevice;
     TemperatureSensorDevice = matterDevices.TemperatureSensorDevice;
     ThermostatDevice = matterDevices.ThermostatDevice;
+    Thermostat = matterClusters.Thermostat;
 
     // Compose device types with BridgedDeviceBasicInformationServer for proper naming
     BridgedOnOffLight = OnOffLightDevice.with(BridgedDeviceBasicInformationServer);
     BridgedOnOffPlugInUnit = OnOffPlugInUnitDevice.with(BridgedDeviceBasicInformationServer);
     BridgedTemperatureSensor = TemperatureSensorDevice.with(BridgedDeviceBasicInformationServer);
+    BridgedThermostat = ThermostatDevice.with(BridgedDeviceBasicInformationServer);
 
     matterAvailable = true;
 } catch (err) {
@@ -152,15 +157,12 @@ export class MatterInterfaceBindings extends BaseInterfaceBindings {
             await this.createTempEndpoints();
 
             // Create heater/thermostat endpoint for each body
-            // NOTE: Heater endpoints disabled for now - ThermostatDevice requires
-            // additional ThermostatServer behavior configuration in matter.js
-            // TODO: Implement proper thermostat support
-            // for (let i = 0; i < state.temps.bodies.length; i++) {
-            //     const body = state.temps.bodies.getItemByIndex(i);
-            //     if (body) {
-            //         await this.createHeaterEndpoint(body);
-            //     }
-            // }
+            for (let i = 0; i < state.temps.bodies.length; i++) {
+                const body = state.temps.bodies.getItemByIndex(i);
+                if (body) {
+                    await this.createHeaterEndpoint(body);
+                }
+            }
 
             logger.info(`Created ${this.endpoints.size} Matter endpoints`);
         } catch (err) {
@@ -385,42 +387,73 @@ export class MatterInterfaceBindings extends BaseInterfaceBindings {
 
     private async createHeaterEndpoint(body: any): Promise<void> {
         try {
-            const endpointId = `heater-${body.id}`;
+            // Only create thermostat if body has a setpoint (implies it's heatable)
+            if (typeof body.setPoint === 'undefined') {
+                logger.debug(`Skipping heater endpoint for body ${body.id} - no setpoint`);
+                return;
+            }
 
-            const endpoint = new Endpoint(ThermostatDevice, {
+            const endpointId = `thermostat-${body.id}`;
+            const deviceName = `${body.name || 'Pool'} Heater`;
+
+            // Determine current heating mode
+            // heatStatus.val > 0 means actively heating, heatMode.val > 0 means heating enabled
+            const isHeating = body.heatStatus && body.heatStatus.val > 0;
+            const currentMode = isHeating ? Thermostat.SystemMode.Heat : Thermostat.SystemMode.Off;
+
+            const endpoint = new Endpoint(BridgedThermostat, {
                 id: endpointId,
                 bridgedDeviceBasicInformation: {
-                    vendorName: "nodejs-poolController",
-                    productName: `${body.name || 'Pool'} Heater`,
-                    nodeLabel: `${body.name || 'Pool'} Heater`,
-                    serialNumber: `heater-${body.id}`,
+                    nodeLabel: deviceName,
+                    productName: "Pool Heater",
+                    productLabel: "Pool Heater",
+                    serialNumber: `heat-${body.id}`,
                     reachable: true,
                 },
                 thermostat: {
-                    // Heating only mode
-                    controlSequenceOfOperation: 2, // HeatingOnly
-                    systemMode: body.heatMode && body.heatMode.val > 1 ? 4 : 0, // Heat or Off
-                    localTemperature: this.toMatterTemp(body.temp || 70),
-                    occupiedHeatingSetpoint: this.toMatterTemp(body.setPoint || 80),
-                    minHeatSetpointLimit: this.toMatterTemp(50),
+                    localTemperature: this.toMatterTemp(body.temp),
+                    occupiedHeatingSetpoint: this.toMatterTemp(body.setPoint),
+                    systemMode: currentMode,
+                    controlSequenceOfOperation: Thermostat.ControlSequenceOfOperation.HeatingOnly,
+                    minHeatSetpointLimit: this.toMatterTemp(40),
                     maxHeatSetpointLimit: this.toMatterTemp(104),
                 }
             });
 
-            // Add endpoint to server first
-            await this.server.add(endpoint);
+            // Add endpoint to the aggregator (not the server)
+            await this.aggregator.add(endpoint);
             this.endpoints.set(endpointId, endpoint);
 
-            // Subscribe to events after endpoint is added
-            if (endpoint.events?.thermostat?.systemMode$Changed) {
-                endpoint.events.thermostat.systemMode$Changed.on(async (value: number) => {
+            // Handle setpoint changes from Matter controller
+            if (endpoint.events?.thermostat?.occupiedHeatingSetpoint$Change) {
+                endpoint.events.thermostat.occupiedHeatingSetpoint$Change.on(async (newValue: number) => {
                     try {
-                        // 0 = Off, 4 = Heat
-                        const modeName = value === 4 ? 'heater' : 'off';
-                        logger.info(`Matter: Heater ${body.id} mode commanded to ${modeName}`);
-                        const modeVal = sys.board.valueMaps.heatModes.getValue(modeName);
-                        if (typeof modeVal !== 'undefined') {
-                            await sys.board.bodies.setHeatModeAsync(body, modeVal);
+                        const newTempF = this.fromMatterTemp(newValue);
+                        logger.info(`Matter: Setting ${body.name} setpoint to ${newTempF}°F`);
+                        await sys.board.bodies.setHeatSetpointAsync(body, newTempF);
+                    } catch (err) {
+                        logger.error(`Matter: Error setting heater setpoint for body ${body.id}: ${err.message}`);
+                    }
+                });
+            }
+
+            // Handle mode changes from Matter controller (Off or Heat)
+            if (endpoint.events?.thermostat?.systemMode$Change) {
+                endpoint.events.thermostat.systemMode$Change.on(async (newMode: number) => {
+                    try {
+                        logger.info(`Matter: Changing ${body.name} heater mode to ${newMode}`);
+                        if (newMode === Thermostat.SystemMode.Off) {
+                            // Disable heater
+                            const modeVal = sys.board.valueMaps.heatModes.getValue('off');
+                            if (typeof modeVal !== 'undefined') {
+                                await sys.board.bodies.setHeatModeAsync(body, modeVal);
+                            }
+                        } else if (newMode === Thermostat.SystemMode.Heat) {
+                            // Enable heater
+                            const modeVal = sys.board.valueMaps.heatModes.getValue('heater');
+                            if (typeof modeVal !== 'undefined') {
+                                await sys.board.bodies.setHeatModeAsync(body, modeVal);
+                            }
                         }
                     } catch (err) {
                         logger.error(`Matter: Error setting heater mode for body ${body.id}: ${err.message}`);
@@ -428,19 +461,7 @@ export class MatterInterfaceBindings extends BaseInterfaceBindings {
                 });
             }
 
-            if (endpoint.events?.thermostat?.occupiedHeatingSetpoint$Changed) {
-                endpoint.events.thermostat.occupiedHeatingSetpoint$Changed.on(async (value: number) => {
-                    try {
-                        const tempF = this.fromMatterTemp(value);
-                        logger.info(`Matter: Heater ${body.id} setpoint commanded to ${tempF}°F`);
-                        await sys.board.bodies.setHeatSetpointAsync(body, tempF);
-                    } catch (err) {
-                        logger.error(`Matter: Error setting heater setpoint for body ${body.id}: ${err.message}`);
-                    }
-                });
-            }
-
-            logger.debug(`Created Matter heater endpoint for body: ${body.name} (${body.id})`);
+            logger.debug(`Created Matter thermostat for: ${deviceName} (${body.id})`);
         } catch (err) {
             logger.error(`Error creating heater endpoint ${body.id}: ${err.message}`);
         }
@@ -583,9 +604,9 @@ export class MatterInterfaceBindings extends BaseInterfaceBindings {
 
     private async updateBody(body: any): Promise<void> {
         try {
-            // Update heater endpoint
-            const heaterEndpoint = this.endpoints.get(`heater-${body.id}`);
-            if (heaterEndpoint) {
+            // Update thermostat endpoint
+            const thermostatEndpoint = this.endpoints.get(`thermostat-${body.id}`);
+            if (thermostatEndpoint) {
                 const updates: any = {
                     thermostat: {}
                 };
@@ -596,14 +617,15 @@ export class MatterInterfaceBindings extends BaseInterfaceBindings {
                 if (typeof body.setPoint !== 'undefined') {
                     updates.thermostat.occupiedHeatingSetpoint = this.toMatterTemp(body.setPoint);
                 }
-                if (body.heatMode) {
-                    // heatMode.val > 1 means heating is enabled
-                    updates.thermostat.systemMode = body.heatMode.val > 1 ? 4 : 0;
+                if (body.heatStatus) {
+                    // heatStatus.val > 0 means actively heating
+                    const isHeating = body.heatStatus.val > 0;
+                    updates.thermostat.systemMode = isHeating ? Thermostat.SystemMode.Heat : Thermostat.SystemMode.Off;
                 }
 
                 if (Object.keys(updates.thermostat).length > 0) {
-                    await heaterEndpoint.set(updates);
-                    logger.debug(`Matter: Updated heater ${body.id}`);
+                    await thermostatEndpoint.set(updates);
+                    logger.debug(`Matter: Updated thermostat ${body.id}`);
                 }
             }
 
