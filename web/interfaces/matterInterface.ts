@@ -13,12 +13,6 @@ let OnOffLightDevice: any;
 let OnOffPlugInUnitDevice: any;
 let TemperatureSensorDevice: any;
 let ThermostatDevice: any;
-let BridgedDeviceBasicInformationServer: any;
-
-// Composed device types for bridged devices (with proper naming support)
-let BridgedOnOffLightDevice: any;
-let BridgedOnOffPlugInUnitDevice: any;
-let BridgedTemperatureSensorDevice: any;
 
 // Track if Matter is available
 let matterAvailable = false;
@@ -28,7 +22,6 @@ let matterAvailable = false;
 try {
     const matterMain = require("@matter/main");
     const matterDevices = require("@matter/main/devices");
-    const matterBehaviors = require("@matter/main/behaviors");
 
     ServerNode = matterMain.ServerNode;
     Endpoint = matterMain.Endpoint;
@@ -36,12 +29,6 @@ try {
     OnOffPlugInUnitDevice = matterDevices.OnOffPlugInUnitDevice;
     TemperatureSensorDevice = matterDevices.TemperatureSensorDevice;
     ThermostatDevice = matterDevices.ThermostatDevice;
-    BridgedDeviceBasicInformationServer = matterBehaviors.BridgedDeviceBasicInformationServer;
-
-    // Compose device types with BridgedDeviceBasicInformation for proper naming
-    BridgedOnOffLightDevice = OnOffLightDevice.with(BridgedDeviceBasicInformationServer);
-    BridgedOnOffPlugInUnitDevice = OnOffPlugInUnitDevice.with(BridgedDeviceBasicInformationServer);
-    BridgedTemperatureSensorDevice = TemperatureSensorDevice.with(BridgedDeviceBasicInformationServer);
 
     matterAvailable = true;
 } catch (err) {
@@ -163,15 +150,8 @@ export class MatterInterfaceBindings extends BaseInterfaceBindings {
             const endpointId = `circuit-${circuit.id}`;
             const deviceName = circuit.name || `Circuit ${circuit.id}`;
 
-            const endpoint = new Endpoint(BridgedOnOffLightDevice, {
+            const endpoint = new Endpoint(OnOffLightDevice, {
                 id: endpointId,
-                bridgedDeviceBasicInformation: {
-                    vendorName: "nodejs-poolController",
-                    productName: deviceName,
-                    nodeLabel: deviceName,
-                    serialNumber: `circuit-${circuit.id}`,
-                    reachable: true,
-                },
                 onOff: {
                     onOff: circuit.isOn === true
                 },
@@ -204,15 +184,8 @@ export class MatterInterfaceBindings extends BaseInterfaceBindings {
             const endpointId = `feature-${feature.id}`;
             const deviceName = feature.name || `Feature ${feature.id}`;
 
-            const endpoint = new Endpoint(BridgedOnOffLightDevice, {
+            const endpoint = new Endpoint(OnOffLightDevice, {
                 id: endpointId,
-                bridgedDeviceBasicInformation: {
-                    vendorName: "nodejs-poolController",
-                    productName: deviceName,
-                    nodeLabel: deviceName,
-                    serialNumber: `feature-${feature.id}`,
-                    reachable: true,
-                },
                 onOff: {
                     onOff: feature.isOn === true
                 },
@@ -248,15 +221,8 @@ export class MatterInterfaceBindings extends BaseInterfaceBindings {
             // Pump is "on" if it's running (rpm > 0 or watts > 0)
             const isRunning = (pump.rpm && pump.rpm > 0) || (pump.watts && pump.watts > 0);
 
-            const endpoint = new Endpoint(BridgedOnOffPlugInUnitDevice, {
+            const endpoint = new Endpoint(OnOffPlugInUnitDevice, {
                 id: endpointId,
-                bridgedDeviceBasicInformation: {
-                    vendorName: "nodejs-poolController",
-                    productName: deviceName,
-                    nodeLabel: deviceName,
-                    serialNumber: `pump-${pump.id}`,
-                    reachable: true,
-                },
                 onOff: {
                     onOff: isRunning
                 },
@@ -299,17 +265,9 @@ export class MatterInterfaceBindings extends BaseInterfaceBindings {
                 const body = state.temps.bodies.getItemByIndex(i);
                 if (body && typeof body.temp !== 'undefined') {
                     const endpointId = `temp-water-${body.id}`;
-                    const deviceName = `${body.name || 'Water'} Temp`;
 
-                    const endpoint = new Endpoint(BridgedTemperatureSensorDevice, {
+                    const endpoint = new Endpoint(TemperatureSensorDevice, {
                         id: endpointId,
-                        bridgedDeviceBasicInformation: {
-                            vendorName: "nodejs-poolController",
-                            productName: deviceName,
-                            nodeLabel: deviceName,
-                            serialNumber: `temp-water-${body.id}`,
-                            reachable: true,
-                        },
                         temperatureMeasurement: {
                             measuredValue: this.toMatterTemp(body.temp)
                         },
@@ -324,17 +282,9 @@ export class MatterInterfaceBindings extends BaseInterfaceBindings {
             // Create air temperature sensor if available
             if (typeof state.temps.air !== 'undefined' && state.temps.air !== null) {
                 const endpointId = "temp-air";
-                const deviceName = "Air Temp";
 
-                const endpoint = new Endpoint(BridgedTemperatureSensorDevice, {
+                const endpoint = new Endpoint(TemperatureSensorDevice, {
                     id: endpointId,
-                    bridgedDeviceBasicInformation: {
-                        vendorName: "nodejs-poolController",
-                        productName: deviceName,
-                        nodeLabel: deviceName,
-                        serialNumber: "temp-air",
-                        reachable: true,
-                    },
                     temperatureMeasurement: {
                         measuredValue: this.toMatterTemp(state.temps.air)
                     },
@@ -348,17 +298,9 @@ export class MatterInterfaceBindings extends BaseInterfaceBindings {
             // Create solar temperature sensor if available
             if (typeof state.temps.solar !== 'undefined' && state.temps.solar !== null) {
                 const endpointId = "temp-solar";
-                const deviceName = "Solar Temp";
 
-                const endpoint = new Endpoint(BridgedTemperatureSensorDevice, {
+                const endpoint = new Endpoint(TemperatureSensorDevice, {
                     id: endpointId,
-                    bridgedDeviceBasicInformation: {
-                        vendorName: "nodejs-poolController",
-                        productName: deviceName,
-                        nodeLabel: deviceName,
-                        serialNumber: "temp-solar",
-                        reachable: true,
-                    },
                     temperatureMeasurement: {
                         measuredValue: this.toMatterTemp(state.temps.solar)
                     },
